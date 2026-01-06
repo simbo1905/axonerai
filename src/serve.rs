@@ -29,7 +29,7 @@ pub async fn start_server(agent: Agent, preferred_port: u16) -> Result<()> {
     let port = find_available_port(preferred_port)?;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
-    // Configure CORS
+    // Configure CORS (permissive for development - restrict in production)
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
