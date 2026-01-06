@@ -5,13 +5,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use clap::{Parser, Subcommand};
-use futures_util::{SinkExt, StreamExt};
-use tower_http::services::ServeDir;
 
 use axonerai::{Agent, AnthropicProvider, GroqProvider, OpenAIProvider, ToolRegistry};
 use axonerai::tools::{Calculator, WebScrape, WebSearch};
@@ -97,14 +94,7 @@ async fn serve(host: Option<String>, port: Option<u16>, web_root: Option<PathBuf
     let state = AppState { web_root, agent };
 
     let assets_dir = state.web_root.join("assets");
-    let assets_service = axum::routing::get_service(ServeDir::new(assets_dir)).handle_error(
-        |err: std::io::Error| async move {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("assets error: {err}"),
-            )
-        },
-    );
+    let assets_service = tower_http::services::ServeDir::new(assets_dir);
 
     let app = Router::new()
         .route("/", get(index))
