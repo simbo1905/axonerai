@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonerAI Agent Chat</title>
+    
+    <!-- React and Babel for SPA -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Custom styles -->
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 0; background: #0f172a; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        /* Message animations */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .message-appear { animation: fadeIn 0.3s ease-out; }
+        
+        /* Typing indicator */
+        @keyframes pulse {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+        .typing-dot { animation: pulse 1.4s ease-in-out infinite; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        
+        /* Code block styling */
+        pre { background: #1e293b; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+        code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.875rem; }
+        
+        /* Connection status indicator */
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .status-connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+        .status-disconnected { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+        .status-connecting { background: #eab308; animation: pulse 1s ease-in-out infinite; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, useMemo } = React;
+        
+        // WebSocket connection hook
+        function useWebSocket(url) {
+            const [status, setStatus] = useState('disconnected');
+            const [lastMessage, setLastMessage] = useState(null);
+            const wsRef = useRef(null);
+            const reconnectTimeoutRef = useRef(null);
+            
+            const connect = useCallback(() => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) return;
+                
+                setStatus('connecting');
+                const ws = new WebSocket(url);
+                
+                ws.onopen = () => {
+                    setStatus('connected');
+                    console.log('WebSocket connected');
+                };
+                
+                ws.onclose = () => {
+                    setStatus('disconnected');
+                    console.log('WebSocket disconnected');
+                    // Attempt reconnect after 3 seconds
+                    reconnectTimeoutRef.current = setTimeout(connect, 3000);
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        setLastMessage(data);
+                    } catch (e) {
+                        console.error('Failed to parse message:', e);
+                    }
+                };
+                
+                wsRef.current = ws;
+            }, [url]);
+            
+            const disconnect = useCallback(() => {
+                if (reconnectTimeoutRef.current) {
+                    clearTimeout(reconnectTimeoutRef.current);
+                }
+                if (wsRef.current) {
+                    wsRef.current.close();
+                    wsRef.current = null;
+                }
+            }, []);
+            
+            const send = useCallback((message) => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify(message));
+                    return true;
+                }
+                return false;
+            }, []);
+            
+            useEffect(() => {
+                connect();
+                return () => disconnect();
+            }, [connect, disconnect]);
+            
+            return { status, lastMessage, send, reconnect: connect };
+        }
+        
+        // Message component
+        function Message({ message, isUser }) {
+            const formatContent = (content) => {
+                // Simple markdown-like formatting
+                const parts = [];
+                let remaining = content;
+                let key = 0;
+                
+                // Handle code blocks
+                const codeBlockRegex = /```(\w*)\n?([\s\S]*?)```/g;
+                let lastIndex = 0;
+                let match;
+                
+                while ((match = codeBlockRegex.exec(content)) !== null) {
+                    if (match.index > lastIndex) {
+                        parts.push(
+                            <span key={key++}>{content.slice(lastIndex, match.index)}</span>
+                        );
+                    }
+                    parts.push(
+                        <pre key={key++} className="my-2">
+                            <code className={`language-${match[1] || 'text'}`}>
+                                {match[2].trim()}
+                            </code>
+                        </pre>
+                    );
+                    lastIndex = match.index + match[0].length;
+                }
+                
+                if (lastIndex < content.length) {
+                    parts.push(<span key={key++}>{content.slice(lastIndex)}</span>);
+                }
+                
+                return parts.length > 0 ? parts : content;
+            };
+            
+            return (
+                <div className={`message-appear flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
+                    <div className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                        isUser 
+                            ? 'bg-blue-600 text-white rounded-br-md' 
+                            : 'bg-slate-700 text-slate-100 rounded-bl-md'
+                    }`}>
+                        <div className="whitespace-pre-wrap break-words">
+                            {formatContent(message.content)}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+        
+        // Typing indicator
+        function TypingIndicator() {
+            return (
+                <div className="flex justify-start mb-4 message-appear">
+                    <div className="bg-slate-700 rounded-2xl rounded-bl-md px-4 py-3 flex gap-1">
+                        <span className="typing-dot w-2 h-2 bg-slate-400 rounded-full"></span>
+                        <span className="typing-dot w-2 h-2 bg-slate-400 rounded-full"></span>
+                        <span className="typing-dot w-2 h-2 bg-slate-400 rounded-full"></span>
+                    </div>
+                </div>
+            );
+        }
+        
+        // Session selector
+        function SessionSelector({ sessions, currentSession, onSelect, onCreate, onDelete }) {
+            const [isOpen, setIsOpen] = useState(false);
+            
+            return (
+                <div className="relative">
+                    <button
+                        onClick={() => setIsOpen(!isOpen)}
+                        className="flex items-center gap-2 px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+                    >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                        <span className="text-sm truncate max-w-[150px]">
+                            {currentSession ? `Session: ${currentSession.slice(0, 8)}...` : 'No session'}
+                        </span>
+                        <svg className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </button>
+                    
+                    {isOpen && (
+                        <div className="absolute top-full left-0 mt-2 w-72 bg-slate-800 rounded-lg shadow-xl border border-slate-700 z-50 overflow-hidden">
+                            <div className="p-2 border-b border-slate-700">
+                                <button
+                                    onClick={() => { onCreate(); setIsOpen(false); }}
+                                    className="w-full flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                    </svg>
+                                    New Session
+                                </button>
+                            </div>
+                            <div className="max-h-64 overflow-y-auto">
+                                {sessions.length === 0 ? (
+                                    <div className="p-4 text-center text-slate-400 text-sm">
+                                        No sessions yet
+                                    </div>
+                                ) : (
+                                    sessions.map(session => (
+                                        <div
+                                            key={session}
+                                            className={`flex items-center justify-between p-3 hover:bg-slate-700 cursor-pointer ${
+                                                session === currentSession ? 'bg-slate-700' : ''
+                                            }`}
+                                            onClick={() => { onSelect(session); setIsOpen(false); }}
+                                        >
+                                            <span className="text-sm truncate flex-1">
+                                                {session}
+                                            </span>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); onDelete(session); }}
+                                                className="p-1 hover:bg-red-600 rounded transition-colors ml-2"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+        
+        // Main App component
+        function App() {
+            const wsUrl = useMemo(() => {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                return `${protocol}//${window.location.host}/ws`;
+            }, []);
+            
+            const { status, lastMessage, send, reconnect } = useWebSocket(wsUrl);
+            
+            const [messages, setMessages] = useState([]);
+            const [input, setInput] = useState('');
+            const [isLoading, setIsLoading] = useState(false);
+            const [sessions, setSessions] = useState([]);
+            const [currentSession, setCurrentSession] = useState(null);
+            
+            const messagesEndRef = useRef(null);
+            const inputRef = useRef(null);
+            
+            // Scroll to bottom when messages change
+            useEffect(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, [messages, isLoading]);
+            
+            // Handle incoming WebSocket messages
+            useEffect(() => {
+                if (!lastMessage) return;
+                
+                switch (lastMessage.type) {
+                    case 'session_created':
+                        setCurrentSession(lastMessage.data.session_id);
+                        setMessages([]);
+                        setSessions(prev => [...prev, lastMessage.data.session_id]);
+                        break;
+                        
+                    case 'session_loaded':
+                        setCurrentSession(lastMessage.data.session_id);
+                        setMessages(lastMessage.data.messages.map((m, i) => ({
+                            id: i,
+                            role: m.role,
+                            content: m.content
+                        })));
+                        break;
+                        
+                    case 'sessions_list':
+                        setSessions(lastMessage.data.sessions);
+                        break;
+                        
+                    case 'session_deleted':
+                        setSessions(prev => prev.filter(s => s !== lastMessage.data.session_id));
+                        if (currentSession === lastMessage.data.session_id) {
+                            setCurrentSession(null);
+                            setMessages([]);
+                        }
+                        break;
+                        
+                    case 'chat_response':
+                        setMessages(prev => [...prev, {
+                            id: Date.now(),
+                            role: 'assistant',
+                            content: lastMessage.data.message
+                        }]);
+                        setIsLoading(false);
+                        break;
+                        
+                    case 'thinking':
+                        // Could show thinking indicator
+                        break;
+                        
+                    case 'tool_use':
+                        setMessages(prev => [...prev, {
+                            id: Date.now(),
+                            role: 'system',
+                            content: `Using tool: ${lastMessage.data.tool}`
+                        }]);
+                        break;
+                        
+                    case 'error':
+                        setMessages(prev => [...prev, {
+                            id: Date.now(),
+                            role: 'error',
+                            content: `Error: ${lastMessage.data.message}`
+                        }]);
+                        setIsLoading(false);
+                        break;
+                        
+                    case 'pong':
+                        // Heartbeat response
+                        break;
+                }
+            }, [lastMessage, currentSession]);
+            
+            // Request session list on connect
+            useEffect(() => {
+                if (status === 'connected') {
+                    send({ type: 'list_sessions' });
+                }
+            }, [status, send]);
+            
+            // Create new session
+            const handleCreateSession = useCallback(() => {
+                send({ type: 'new_session' });
+            }, [send]);
+            
+            // Load session
+            const handleLoadSession = useCallback((sessionId) => {
+                send({ type: 'load_session', data: { session_id: sessionId } });
+            }, [send]);
+            
+            // Delete session
+            const handleDeleteSession = useCallback((sessionId) => {
+                if (confirm('Delete this session?')) {
+                    send({ type: 'delete_session', data: { session_id: sessionId } });
+                }
+            }, [send]);
+            
+            // Send message
+            const handleSend = useCallback(() => {
+                if (!input.trim() || isLoading || status !== 'connected') return;
+                
+                // Create session if none exists
+                if (!currentSession) {
+                    handleCreateSession();
+                    // Queue the message to be sent after session creation
+                    const checkAndSend = setInterval(() => {
+                        if (currentSession) {
+                            clearInterval(checkAndSend);
+                            send({
+                                type: 'chat',
+                                data: { session_id: currentSession, message: input.trim() }
+                            });
+                        }
+                    }, 100);
+                    setTimeout(() => clearInterval(checkAndSend), 5000);
+                    return;
+                }
+                
+                // Add user message immediately
+                setMessages(prev => [...prev, {
+                    id: Date.now(),
+                    role: 'user',
+                    content: input.trim()
+                }]);
+                
+                // Send to server
+                send({
+                    type: 'chat',
+                    data: { session_id: currentSession, message: input.trim() }
+                });
+                
+                setInput('');
+                setIsLoading(true);
+            }, [input, isLoading, status, currentSession, send, handleCreateSession]);
+            
+            // Handle Enter key
+            const handleKeyDown = useCallback((e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                }
+            }, [handleSend]);
+            
+            return (
+                <div className="h-screen flex flex-col bg-slate-900">
+                    {/* Header */}
+                    <header className="flex items-center justify-between px-6 py-4 bg-slate-800 border-b border-slate-700">
+                        <div className="flex items-center gap-4">
+                            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
+                                AxonerAI Agent
+                            </h1>
+                            <div className="flex items-center gap-2">
+                                <span className={`status-dot ${
+                                    status === 'connected' ? 'status-connected' :
+                                    status === 'connecting' ? 'status-connecting' : 'status-disconnected'
+                                }`}></span>
+                                <span className="text-xs text-slate-400 capitalize">{status}</span>
+                            </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-4">
+                            <SessionSelector
+                                sessions={sessions}
+                                currentSession={currentSession}
+                                onSelect={handleLoadSession}
+                                onCreate={handleCreateSession}
+                                onDelete={handleDeleteSession}
+                            />
+                            
+                            {status === 'disconnected' && (
+                                <button
+                                    onClick={reconnect}
+                                    className="px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm transition-colors"
+                                >
+                                    Reconnect
+                                </button>
+                            )}
+                        </div>
+                    </header>
+                    
+                    {/* Messages area */}
+                    <main className="flex-1 overflow-y-auto p-6">
+                        <div className="max-w-4xl mx-auto">
+                            {messages.length === 0 && !isLoading ? (
+                                <div className="flex flex-col items-center justify-center h-full text-center py-20">
+                                    <div className="text-6xl mb-4">🤖</div>
+                                    <h2 className="text-2xl font-bold text-slate-300 mb-2">
+                                        Welcome to AxonerAI Agent
+                                    </h2>
+                                    <p className="text-slate-400 max-w-md">
+                                        Start a conversation with the AI agent. It has access to various tools 
+                                        including web search, calculator, and web scraping capabilities.
+                                    </p>
+                                    {!currentSession && (
+                                        <button
+                                            onClick={handleCreateSession}
+                                            className="mt-6 px-6 py-3 bg-blue-600 hover:bg-blue-500 rounded-lg transition-colors"
+                                        >
+                                            Start New Session
+                                        </button>
+                                    )}
+                                </div>
+                            ) : (
+                                <>
+                                    {messages.map(message => (
+                                        <Message
+                                            key={message.id}
+                                            message={message}
+                                            isUser={message.role === 'user'}
+                                        />
+                                    ))}
+                                    {isLoading && <TypingIndicator />}
+                                    <div ref={messagesEndRef} />
+                                </>
+                            )}
+                        </div>
+                    </main>
+                    
+                    {/* Input area */}
+                    <footer className="bg-slate-800 border-t border-slate-700 p-4">
+                        <div className="max-w-4xl mx-auto">
+                            <div className="flex gap-4">
+                                <textarea
+                                    ref={inputRef}
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={handleKeyDown}
+                                    placeholder={status === 'connected' ? "Type your message... (Enter to send, Shift+Enter for new line)" : "Connecting..."}
+                                    disabled={status !== 'connected'}
+                                    className="flex-1 bg-slate-700 border border-slate-600 rounded-xl px-4 py-3 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-400 disabled:opacity-50"
+                                    rows={1}
+                                    style={{ minHeight: '52px', maxHeight: '200px' }}
+                                />
+                                <button
+                                    onClick={handleSend}
+                                    disabled={!input.trim() || isLoading || status !== 'connected'}
+                                    className="px-6 py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-xl transition-colors flex items-center gap-2"
+                                >
+                                    <span>Send</span>
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="mt-2 text-xs text-slate-500 text-center">
+                                Powered by AxonerAI • {status === 'connected' ? 'Connected' : 'Reconnecting...'}
+                            </div>
+                        </div>
+                    </footer>
+                </div>
+            );
+        }
+        
+        // Mount the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

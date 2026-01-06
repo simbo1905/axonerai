@@ -182,12 +182,105 @@ GOOGLE_API_KEY=your_google_key
 GOOGLE_CX=your_search_engine_id
 ```
 
+## Web Server Interface
+
+AxonerAI includes a built-in web server for interacting with the agent through a browser-based chat interface.
+
+### Starting the Server
+
+```bash
+# Start with default settings (auto-finds a high port)
+agt serve
+
+# Specify a port
+agt serve --port 8080
+
+# Use a specific provider
+agt serve --provider anthropic
+
+# Use in-memory session storage
+agt serve --memory-storage
+```
+
+### Server Options
+
+```
+Options:
+      --host <HOST>                    Host address to bind to [default: 127.0.0.1]
+  -p, --port <PORT>                    Port to listen on (auto-selects if not specified)
+      --static-dir <STATIC_DIR>        Directory for static files [default: ./static]
+      --sessions-dir <SESSIONS_DIR>    Directory for session storage [default: ./sessions]
+      --memory-storage                 Use in-memory session storage
+      --provider <PROVIDER>            LLM provider (groq, openai, anthropic) [default: groq]
+      --system-prompt <SYSTEM_PROMPT>  Custom system prompt for the agent
+      --no-tools                       Disable built-in tools
+```
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/` | Serve the chat UI |
+| GET | `/ws` | WebSocket endpoint for real-time chat |
+| GET | `/api/info` | Server information |
+| GET | `/api/sessions` | List all sessions |
+| POST | `/api/sessions` | Create a new session |
+| GET | `/api/sessions/{id}` | Get session details |
+| DELETE | `/api/sessions/{id}` | Delete a session |
+| POST | `/api/sessions/{id}/chat` | Send a message (REST API) |
+
+### WebSocket Protocol
+
+Connect to `/ws` for real-time chat. Messages are JSON with a `type` field:
+
+**Client Messages:**
+- `{"type": "chat", "data": {"session_id": "...", "message": "..."}}`
+- `{"type": "new_session"}`
+- `{"type": "load_session", "data": {"session_id": "..."}}`
+- `{"type": "list_sessions"}`
+- `{"type": "delete_session", "data": {"session_id": "..."}}`
+- `{"type": "ping"}`
+
+**Server Messages:**
+- `{"type": "chat_response", "data": {"session_id": "...", "message": "..."}}`
+- `{"type": "session_created", "data": {"session_id": "..."}}`
+- `{"type": "session_loaded", "data": {"session_id": "...", "messages": [...]}}`
+- `{"type": "sessions_list", "data": {"sessions": [...]}}`
+- `{"type": "error", "data": {"message": "..."}}`
+- `{"type": "pong"}`
+
+### Session Storage
+
+AxonerAI supports pluggable session storage:
+
+1. **Null-byte Delimited Storage** (default) - Flat file format optimized for streaming
+2. **Memory Storage** - In-memory storage (lost on restart)
+
+The null-byte delimited format uses this structure:
+```
+<record_type>\n<data>\0
+```
+
+Record types: `SESSION_META`, `USER_MSG`, `ASSISTANT_MSG`, `TOOL_CALL`, `TOOL_RESULT`
+
+## CLI Chat Mode
+
+For terminal-based interaction:
+
+```bash
+agt chat --provider groq
+```
+
 ## Features
 
 - [x] Multi-provider support (Groq, Anthropic, OpenAI)
 - [x] Tool system with custom tool support
-- [x] Session management (file-based)
+- [x] Session management (file-based and memory)
 - [x] System prompts
+- [x] Web server with WebSocket support
+- [x] React-based chat UI (single HTML file, no build required)
+- [x] Pluggable session storage backends
+- [x] REST and WebSocket APIs
 
 ## Comparison with Python Frameworks
 
