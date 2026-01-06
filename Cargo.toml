@@ -20,7 +20,14 @@ async-trait = "0.1"
 env = "1.0.1"
 scraper = "0.24.0"
 uuid = { version = "1.18.1", features = ["v4"] }
+clap = { version = "4.5.27", features = ["derive"] }
+axum = { version = "0.7.9", features = ["ws"] }
+tower-http = { version = "0.5.2", features = ["fs"] }
+futures-util = "0.3.31"
 
+[[bin]]
+name = "agt"
+path = "src/bin/agt.rs"
 
 [dev-dependencies]
 tokio-test = "0.4"
