@@ -1,7 +1,7 @@
 use anyhow::{Result};
 use std::path::PathBuf;
 use std::fs;
-use crate::session::Session;
+use crate::session::{Session, SessionManager};
 
 pub struct FileSessionManager{
     session_id: String,
@@ -19,31 +19,29 @@ impl FileSessionManager {
     fn session_path(&self)->PathBuf{
         self.directory.join(&self.session_id)
     }
+}
 
-    pub fn save(&self, session: &Session)-> Result<(), std::io::Error>{
+impl SessionManager for FileSessionManager {
+    fn save(&self, session: &Session)-> Result<()>{
         let location = self.session_path().join("messages.json");
         let message = serde_json::to_string(session)?;
         fs::write(&location, message)?;
         Ok(())
     }
 
-    pub fn load(&self)->Result<Session>{
+    fn load(&self)->Result<Session>{
         let location = self.session_path().join("messages.json");
         let content = fs::read_to_string(location)?;
         let session = serde_json::from_str(&content)?;
         Ok(session)
     }
-    pub fn exists(&self)->bool{
 
+    fn exists(&self)->bool{
         let path = &self.session_path().join("messages.json");
-        return if path.exists() {
-            true
-        } else { false }
-
+        path.exists()
     }
 
-    pub fn get_session(&self)->&str{
+    fn get_session_id(&self)->&str{
         &self.session_id
     }
-
 }

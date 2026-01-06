@@ -1,11 +1,19 @@
 use serde::{Deserialize, Serialize};
 use crate::provider::Message;
+use anyhow::Result;
 
 #[derive(Serialize,Deserialize, Debug, Clone)]
 pub struct Session{
-    session_id: String,
-    messages: Vec<Message>,
-    time_stamp: String
+    pub session_id: String,
+    pub messages: Vec<Message>,
+    pub time_stamp: String
+}
+
+pub trait SessionManager: Send + Sync {
+    fn load(&self) -> Result<Session>;
+    fn save(&self, session: &Session) -> Result<()>;
+    fn exists(&self) -> bool;
+    fn get_session_id(&self) -> &str;
 }
 
 impl Session {

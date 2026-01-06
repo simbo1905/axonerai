@@ -8,6 +8,7 @@ pub mod executor;
 pub mod agent;
 pub mod session;
 pub mod file_session_manager;
+pub mod flat_file_session;
 
 // Re-exporting main types for convenience
 pub use agent::Agent;
@@ -17,4 +18,5 @@ pub use anthropic::AnthropicProvider;
 pub use tool::{Tool, ToolRegistry};
 pub use tools::{Calculator, WebSearch, WebScrape};
 pub use file_session_manager::FileSessionManager;
+pub use flat_file_session::FlatFileSessionManager;
 pub use session::Session;

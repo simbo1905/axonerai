@@ -2,34 +2,33 @@ use crate::executor::{ToolExecutor, ToolResult};
 use crate::provider::{Message, Provider, StopReason};
 use crate::tool::ToolRegistry;
 use anyhow::Result;
-use crate::file_session_manager::FileSessionManager;
-use crate::session::Session;
+use crate::session::{Session, SessionManager};
 
 pub struct Agent {
     provider: Box<dyn Provider>,
     registry: ToolRegistry,
     max_iterations: usize,
     system_prompt: Option<String>,
-    file_session_manager: Option<FileSessionManager>
+    session_manager: Option<Box<dyn SessionManager>>
 }
 
 impl Agent {
-    pub fn new(provider: Box<dyn Provider>, registry: ToolRegistry, system_prompt: Option<String>, file_session_manager: Option<FileSessionManager>) -> Self {
+    pub fn new(provider: Box<dyn Provider>, registry: ToolRegistry, system_prompt: Option<String>, session_manager: Option<Box<dyn SessionManager>>) -> Self {
         Self {
             provider,
             registry,
             max_iterations: 10, // Prevent infinite loops
             system_prompt,
-            file_session_manager
+            session_manager
         }
     }
 
     /// Run the agent with a user prompt
     pub async fn run(&self, user_prompt: &str) -> Result<String> {
 
-        let mut session = if let Some(ref sm) = self.file_session_manager {
+        let mut session = if let Some(ref sm) = self.session_manager {
             if sm.exists() { sm.load()? }
-            else { Session::new(sm.get_session().to_string()) }
+            else { Session::new(sm.get_session_id().to_string()) }
         }
         else {
             Session::new("stateless".to_string())
@@ -62,7 +61,7 @@ impl Agent {
                             content: text.clone(),
                         });
 
-                        if let Some(ref sm) = self.file_session_manager {
+                        if let Some(ref sm) = self.session_manager {
                             sm.save(&session)?;
                         }
 
@@ -113,7 +112,7 @@ impl Agent {
             }
         }
 
-        if let Some(ref sm) = self.file_session_manager {
+        if let Some(ref sm) = self.session_manager {
             sm.save(&session)?;
         }
         Ok(format!(
