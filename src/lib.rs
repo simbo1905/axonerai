@@ -8,6 +8,7 @@ pub mod executor;
 pub mod agent;
 pub mod session;
 pub mod file_session_manager;
+pub mod serve;
 
 // Re-exporting main types for convenience
 pub use agent::Agent;

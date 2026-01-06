@@ -7,6 +7,27 @@ A type-safe, high-performance agentic AI framework in Rust.
 - ⚡ **Fast** - Native Rust performance, no Python overhead
 - 🔧 **Simple** - Clean API, minimal boilerplate
 - 📦 **Single binary** - No dependency hell, easy deployment
+- 🌐 **Web Interface** - Built-in web chat UI with `agt serve`
+
+## Quick Start - Web Interface
+
+The fastest way to get started is with the built-in web chat interface:
+
+```bash
+# Clone the repository
+git clone https://github.com/Manojython/axonerai.git
+cd axonerai
+
+# Set your API key
+export GROQ_API_KEY=your_api_key_here
+
+# Start the web server
+cargo run --bin agt serve
+
+# Open http://127.0.0.1:4096 in your browser
+```
+
+See [docs/AGT_SERVE.md](docs/AGT_SERVE.md) for more details.
 
 ## Installation
 

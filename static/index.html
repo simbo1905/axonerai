@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxonerAI Chat</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js" integrity="sha384-L7w+6Q3xKJLANJVl8dOxAkgFaGnPdVGlYPJrHaHHxCKlXLz9K6+bPLznVjVvZsjj" crossorigin="anonymous"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" integrity="sha384-BYMrxwMWNKgZJFaBFdjC9b4pR3i++cOCB5v/w+4c8+gBP3V8h+bVkPDBi7p5w0Cq" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white">
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function ChatApp() {
+            const [messages, setMessages] = useState([]);
+            const [input, setInput] = useState('');
+            const [connected, setConnected] = useState(false);
+            const [ws, setWs] = useState(null);
+            const messagesEndRef = useRef(null);
+
+            const scrollToBottom = () => {
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            };
+
+            useEffect(() => {
+                scrollToBottom();
+            }, [messages]);
+
+            useEffect(() => {
+                // Connect to WebSocket
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws`;
+                const socket = new WebSocket(wsUrl);
+
+                socket.onopen = () => {
+                    console.log('WebSocket connected');
+                    setConnected(true);
+                };
+
+                socket.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        setMessages(prev => [...prev, {
+                            type: data.type,
+                            content: data.content,
+                            timestamp: new Date()
+                        }]);
+                    } catch (e) {
+                        console.error('Failed to parse message:', e);
+                    }
+                };
+
+                socket.onclose = () => {
+                    console.log('WebSocket disconnected');
+                    setConnected(false);
+                };
+
+                socket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    setConnected(false);
+                };
+
+                setWs(socket);
+
+                return () => {
+                    socket.close();
+                };
+            }, []);
+
+            const sendMessage = () => {
+                if (input.trim() && ws && connected) {
+                    const message = {
+                        type: 'user',
+                        content: input.trim()
+                    };
+                    ws.send(JSON.stringify(message));
+                    setInput('');
+                }
+            };
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    {/* Header */}
+                    <header className="bg-gray-800 border-b border-gray-700 p-4">
+                        <div className="max-w-4xl mx-auto flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                                <div className="text-2xl font-bold text-blue-400">AxonerAI</div>
+                                <div className="text-sm text-gray-400">Chat Interface</div>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                                <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                <span className="text-sm text-gray-400">
+                                    {connected ? 'Connected' : 'Disconnected'}
+                                </span>
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Messages */}
+                    <main className="flex-1 overflow-y-auto p-4">
+                        <div className="max-w-4xl mx-auto space-y-4">
+                            {messages.map((msg, idx) => (
+                                <div 
+                                    key={idx}
+                                    className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}
+                                >
+                                    <div 
+                                        className={`max-w-[80%] rounded-lg p-4 ${
+                                            msg.type === 'user' 
+                                                ? 'bg-blue-600 text-white' 
+                                                : msg.type === 'assistant'
+                                                ? 'bg-gray-800 text-gray-100'
+                                                : msg.type === 'system'
+                                                ? 'bg-gray-700 text-gray-300 text-sm italic'
+                                                : 'bg-red-900 text-red-100'
+                                        }`}
+                                    >
+                                        <div className="whitespace-pre-wrap break-words">
+                                            {msg.content}
+                                        </div>
+                                        <div className="text-xs opacity-70 mt-2">
+                                            {msg.timestamp.toLocaleTimeString()}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                            <div ref={messagesEndRef} />
+                        </div>
+                    </main>
+
+                    {/* Input */}
+                    <footer className="bg-gray-800 border-t border-gray-700 p-4">
+                        <div className="max-w-4xl mx-auto">
+                            <div className="flex space-x-2">
+                                <input
+                                    type="text"
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={handleKeyDown}
+                                    placeholder="Type your message..."
+                                    disabled={!connected}
+                                    className="flex-1 bg-gray-700 text-white rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                />
+                                <button
+                                    onClick={sendMessage}
+                                    disabled={!connected || !input.trim()}
+                                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-lg transition-colors"
+                                >
+                                    Send
+                                </button>
+                            </div>
+                            <div className="text-xs text-gray-500 mt-2 text-center">
+                                Press Enter to send • Shift+Enter for new line
+                            </div>
+                        </div>
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ChatApp />);
+    </script>
+</body>
+</html>
