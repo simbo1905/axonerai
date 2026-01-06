@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agt serve</title>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+      body { margin: 0; background: #0b1220; color: #e5e7eb; }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: #0f172a; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 5px; }
+      ::-webkit-scrollbar-thumb:hover { background: #475569; }
+      .glass { background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(10px); }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="min-h-screen flex items-center justify-center text-slate-400">
+        Loading…
+      </div>
+    </div>
+
+    <script type="module" src="/assets/agt-client.mjs"></script>
+
+    <script type="text/babel" data-presets="env,react">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      function App() {
+        const [status, setStatus] = useState("connecting");
+        const [sessionID, setSessionID] = useState(null);
+        const [messages, setMessages] = useState([]);
+        const [input, setInput] = useState("");
+        const [busy, setBusy] = useState(false);
+        const bottomRef = useRef(null);
+
+        const client = useMemo(() => window.AgtClient.createClient(), []);
+
+        useEffect(() => {
+          client.setHandlers({
+            onOpen: () => setStatus("connected"),
+            onClose: () => setStatus("closed"),
+            onError: () => setStatus("error"),
+            onMessage: (msg) => {
+              if (msg.type === "server.connected") {
+                setSessionID(msg.sessionID || null);
+              }
+              if (msg.type === "chat.started") setBusy(true);
+              if (msg.type === "chat.finished") setBusy(false);
+              if (msg.type === "message") {
+                setMessages((prev) => prev.concat([{ role: msg.role, content: msg.content }]));
+              }
+              if (msg.type === "error") {
+                setMessages((prev) =>
+                  prev.concat([{ role: "system", content: msg.message || "error" }])
+                );
+                setBusy(false);
+              }
+            },
+          });
+          client.connect();
+          return () => client.close();
+        }, [client]);
+
+        useEffect(() => {
+          bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, [messages, busy]);
+
+        function send() {
+          const text = input.trim();
+          if (!text || busy) return;
+          setMessages((prev) => prev.concat([{ role: "user", content: text }]));
+          setInput("");
+          try {
+            client.chat(text);
+          } catch (e) {
+            setMessages((prev) =>
+              prev.concat([{ role: "system", content: String(e?.message || e) }])
+            );
+          }
+        }
+
+        return (
+          <div className="min-h-screen">
+            <div className="max-w-5xl mx-auto px-4 py-6">
+              <div className="flex items-end justify-between mb-4">
+                <div>
+                  <div className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-violet-400">
+                    agt serve
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Status: <span className="text-slate-200">{status}</span>
+                    {sessionID ? <span> · session: <span className="font-mono text-slate-300">{sessionID}</span></span> : null}
+                  </div>
+                </div>
+                <div className="text-xs text-slate-500">
+                  WebSocket: <span className="font-mono">{client.wsUrl}</span>
+                </div>
+              </div>
+
+              <div className="glass border border-slate-800 rounded-xl overflow-hidden shadow-2xl shadow-black/40">
+                <div className="p-4 h-[65vh] overflow-auto space-y-3">
+                  {messages.length === 0 ? (
+                    <div className="text-slate-500 italic">
+                      Say hi. This is a single-file SPA talking to the agent over websockets.
+                    </div>
+                  ) : null}
+
+                  {messages.map((m, idx) => (
+                    <div key={idx} className={"flex " + (m.role === "user" ? "justify-end" : "justify-start")}>
+                      <div
+                        className={
+                          "max-w-[85%] px-4 py-3 rounded-xl border text-sm whitespace-pre-wrap " +
+                          (m.role === "user"
+                            ? "bg-cyan-950/60 border-cyan-900 text-cyan-50"
+                            : m.role === "system"
+                            ? "bg-rose-950/40 border-rose-900 text-rose-100"
+                            : "bg-slate-900/60 border-slate-800 text-slate-100")
+                        }
+                      >
+                        <div className="text-[10px] uppercase tracking-wide opacity-60 mb-1">
+                          {m.role}
+                        </div>
+                        {m.content}
+                      </div>
+                    </div>
+                  ))}
+
+                  {busy ? (
+                    <div className="text-slate-400 text-sm animate-pulse">Agent is thinking…</div>
+                  ) : null}
+                  <div ref={bottomRef} />
+                </div>
+
+                <div className="border-t border-slate-800 p-3 bg-slate-950/50">
+                  <div className="flex gap-2">
+                    <textarea
+                      className="flex-1 bg-slate-900/70 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      rows="2"
+                      placeholder={busy ? "Waiting for agent…" : "Type a message. Enter to send, Shift+Enter for newline."}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          send();
+                        }
+                      }}
+                      disabled={status !== "connected" || busy}
+                    />
+                    <button
+                      className={
+                        "px-4 rounded-lg text-sm font-semibold border transition " +
+                        (status === "connected" && !busy
+                          ? "bg-cyan-600 border-cyan-500 hover:bg-cyan-500 text-slate-950"
+                          : "bg-slate-800 border-slate-700 text-slate-400 cursor-not-allowed")
+                      }
+                      onClick={send}
+                      disabled={status !== "connected" || busy}
+                    >
+                      Send
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-slate-500">
+                    Storage: server-side session manager (stateless or null-delimited flat file).
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
+

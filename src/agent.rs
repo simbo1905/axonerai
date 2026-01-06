@@ -4,34 +4,57 @@ use crate::tool::ToolRegistry;
 use anyhow::Result;
 use crate::file_session_manager::FileSessionManager;
 use crate::session::Session;
+use crate::session_manager::SessionManager;
+use std::sync::Arc;
 
 pub struct Agent {
-    provider: Box<dyn Provider>,
-    registry: ToolRegistry,
+    provider: Arc<dyn Provider>,
+    registry: Arc<ToolRegistry>,
     max_iterations: usize,
     system_prompt: Option<String>,
-    file_session_manager: Option<FileSessionManager>
+    session_manager: Option<Arc<dyn SessionManager>>,
 }
 
 impl Agent {
-    pub fn new(provider: Box<dyn Provider>, registry: ToolRegistry, system_prompt: Option<String>, file_session_manager: Option<FileSessionManager>) -> Self {
+    /// Backwards-compatible constructor (accepts the legacy JSON file session manager).
+    pub fn new(
+        provider: Box<dyn Provider>,
+        registry: ToolRegistry,
+        system_prompt: Option<String>,
+        file_session_manager: Option<FileSessionManager>,
+    ) -> Self {
+        let provider: Arc<dyn Provider> = Arc::from(provider);
+        let registry = Arc::new(registry);
+        let session_manager = file_session_manager
+            .map(|sm| Arc::new(sm) as Arc<dyn SessionManager>);
+        Self::new_with_session_manager(provider, registry, system_prompt, session_manager)
+    }
+
+    pub fn new_with_session_manager(
+        provider: Arc<dyn Provider>,
+        registry: Arc<ToolRegistry>,
+        system_prompt: Option<String>,
+        session_manager: Option<Arc<dyn SessionManager>>,
+    ) -> Self {
         Self {
             provider,
             registry,
-            max_iterations: 10, // Prevent infinite loops
+            max_iterations: 10,
             system_prompt,
-            file_session_manager
+            session_manager,
         }
     }
 
     /// Run the agent with a user prompt
     pub async fn run(&self, user_prompt: &str) -> Result<String> {
 
-        let mut session = if let Some(ref sm) = self.file_session_manager {
-            if sm.exists() { sm.load()? }
-            else { Session::new(sm.get_session().to_string()) }
-        }
-        else {
+        let mut session = if let Some(ref sm) = self.session_manager {
+            if sm.exists() {
+                sm.load()?
+            } else {
+                Session::new(sm.session_id().to_string())
+            }
+        } else {
             Session::new("stateless".to_string())
         };
 
@@ -44,7 +67,7 @@ impl Agent {
             content: user_prompt.to_string(),
         });
 
-        let executor = ToolExecutor::new(&self.registry);
+        let executor = ToolExecutor::new(self.registry.as_ref());
         let tools = self.registry.get_all_for_llm();
 
         for _iteration in 1..=self.max_iterations {
@@ -62,7 +85,7 @@ impl Agent {
                             content: text.clone(),
                         });
 
-                        if let Some(ref sm) = self.file_session_manager {
+                        if let Some(ref sm) = self.session_manager {
                             sm.save(&session)?;
                         }
 
@@ -113,7 +136,7 @@ impl Agent {
             }
         }
 
-        if let Some(ref sm) = self.file_session_manager {
+        if let Some(ref sm) = self.session_manager {
             sm.save(&session)?;
         }
         Ok(format!(

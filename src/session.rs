@@ -17,6 +17,11 @@ impl Session {
             time_stamp:  "2025-11-19T00:00:00Z".to_string(),
         }
     }
+
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn add_message(&mut self, message: Message) {
         self.messages.push(message);
     }
@@ -25,5 +30,8 @@ impl Session {
         &self.messages
     }
 
+    pub fn set_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+    }
 
 }

@@ -1,7 +1,8 @@
-use anyhow::{Result};
+use anyhow::Result;
 use std::path::PathBuf;
 use std::fs;
 use crate::session::Session;
+use crate::session_manager::SessionManager;
 
 pub struct FileSessionManager{
     session_id: String,
@@ -9,7 +10,7 @@ pub struct FileSessionManager{
 }
 
 impl FileSessionManager {
-    pub fn new(session_id: String, base_dir: PathBuf) -> Result<Self, std::io::Error>{
+    pub fn new(session_id: String, base_dir: PathBuf) -> Result<Self>{
         fs::create_dir_all(&base_dir.join(&session_id))?;
         Ok(Self{
             session_id,
@@ -20,7 +21,7 @@ impl FileSessionManager {
         self.directory.join(&self.session_id)
     }
 
-    pub fn save(&self, session: &Session)-> Result<(), std::io::Error>{
+    pub fn save(&self, session: &Session)-> Result<()>{
         let location = self.session_path().join("messages.json");
         let message = serde_json::to_string(session)?;
         fs::write(&location, message)?;
@@ -46,4 +47,26 @@ impl FileSessionManager {
         &self.session_id
     }
 
+}
+
+impl SessionManager for FileSessionManager {
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn exists(&self) -> bool {
+        FileSessionManager::exists(self)
+    }
+
+    fn load(&self) -> Result<Session> {
+        Ok(FileSessionManager::load(self)?)
+    }
+
+    fn save(&self, session: &Session) -> Result<()> {
+        Ok(FileSessionManager::save(self, session)?)
+    }
+
+    fn raw_session_path(&self) -> Option<PathBuf> {
+        Some(self.session_path().join("messages.json"))
+    }
 }

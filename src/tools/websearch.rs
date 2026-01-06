@@ -1,5 +1,5 @@
 use crate::tool::Tool;
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,8 +35,8 @@ impl Tool for WebSearch {
         let input: WebSearchInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid calculator input: {}", e))?;
 
-        let search_api_key = env::var("SEARCH_API_KEY")?;
-        let cx = env::var("CX_ENGINE")?;
+        let search_api_key = std::env::var("SEARCH_API_KEY")?;
+        let cx = std::env::var("CX_ENGINE")?;
         let url = "https://www.googleapis.com/customsearch/v1?".to_string();
         let response = reqwest::Client::new()
             .get(url)
