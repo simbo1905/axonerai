@@ -8,6 +8,10 @@ A type-safe, high-performance agentic AI framework in Rust.
 - 🔧 **Simple** - Clean API, minimal boilerplate
 - 📦 **Single binary** - No dependency hell, easy deployment
 
+## Project Goals
+
+This library is designed to maintain a minimal runtime footprint for high-performance, type-safe AI agents in Rust. Our goal is to enable the library to run efficiently on constrained devices or scale to hundreds or thousands of agents on standard hardware. We aim to provide a flexible and modular interface that allows users to adapt the library to their own needs with minimal overhead.
+
 ## Installation
 
 Add to your `Cargo.toml`:
