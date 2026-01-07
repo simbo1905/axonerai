@@ -11,31 +11,34 @@ use axum::Router;
 use clap::{Parser, Subcommand};
 
 use axonerai::{Agent, AnthropicProvider, GroqProvider, OpenAIProvider, ToolRegistry};
-use axonerai::tools::{Calculator, WebScrape, WebSearch};
+use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
 
 #[derive(Parser, Debug)]
 #[command(name = "agt", version, about = "AxonerAI tooling")]
 struct Cli {
+    /// Enable verbose logging (-v for info, -vv for debug, -vvv for trace)
+    #[arg(short, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Start a local web UI + websocket server
-    Serve {
-        /// Hostname to bind to (default: 127.0.0.1)
-        #[arg(long)]
-        host: Option<String>,
+     Serve {
+         /// Hostname to bind to (default: 127.0.0.1)
+         #[arg(long)]
+         host: Option<String>,
 
-        /// Port to bind to (default: 0, auto-select a free high port)
-        #[arg(long)]
-        port: Option<u16>,
+         /// Port to bind to (default: 0, auto-select a free high port)
+         #[arg(long)]
+         port: Option<u16>,
 
-        /// Directory to serve `index.html` + `assets/` from (default: ./web)
-        #[arg(long)]
-        web_root: Option<PathBuf>,
-    },
+         /// Directory to serve `index.html` + `assets/` from (default: ./web)
+         #[arg(long)]
+         web_root: Option<PathBuf>,
+     },
 }
 
 #[derive(Clone)]
@@ -71,9 +74,49 @@ enum ServerMsg<'a> {
     },
 }
 
+/// Load environment variables from a .env file if it exists
+fn load_env_file() {
+    use std::fs;
+    use std::io::{BufRead, BufReader};
+
+    let env_file = ".env";
+    if let Ok(file) = fs::File::open(env_file) {
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                // Skip empty lines and comments
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+
+                // Parse key=value pairs
+                if let Some((key, value)) = line.split_once('=') {
+                    let key = key.trim();
+                    let value = value.trim();
+                    
+                    // Only set if not already set in environment
+                    if std::env::var(key).is_err() {
+                        // std::env::set_var is unsafe but we're using it safely here
+                        unsafe {
+                            std::env::set_var(key, value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    load_env_file();
+
     let cli = Cli::parse();
+    
+    if cli.verbose > 0 {
+        eprintln!("[*] Verbose level: {}", cli.verbose);
+    }
 
     match cli.command {
         Commands::Serve {
@@ -138,7 +181,7 @@ async fn index(State(state): State<AppState>) -> Response {
 
     match tokio::fs::read_to_string(&disk_path).await {
         Ok(html) => Html(html).into_response(),
-        Err(_) => Html(include_str!("../../web/index.html").to_string()).into_response(),
+        Err(_) => Html(include_str!("../web/index.html").to_string()).into_response(),
     }
 }
 
@@ -253,6 +296,7 @@ fn build_agent_from_env() -> anyhow::Result<Arc<Agent>> {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(Calculator));
     registry.register(Box::new(WebScrape));
+    registry.register(Box::new(WriteFile));
 
     // Only register WebSearch if it can run without immediately failing on missing env vars.
     let has_search_env =
@@ -268,4 +312,3 @@ fn build_agent_from_env() -> anyhow::Result<Arc<Agent>> {
 
     Ok(Arc::new(Agent::new(provider, registry, system_prompt, None)))
 }
-
