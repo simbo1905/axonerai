@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::Context;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
@@ -9,6 +10,8 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
+use tracing::info;
 
 use axonerai::{Agent, AnthropicProvider, GroqProvider, OpenAIProvider, ToolRegistry};
 use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
@@ -16,7 +19,7 @@ use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
 #[derive(Parser, Debug)]
 #[command(name = "agt", version, about = "AxonerAI tooling")]
 struct Cli {
-    /// Enable verbose logging (-v for info, -vv for debug, -vvv for trace)
+    /// Enable verbose logging (-v for debug, -vv for trace)
     #[arg(short, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
@@ -45,6 +48,7 @@ enum Commands {
 struct AppState {
     web_root: PathBuf,
     agent: Option<Arc<Agent>>,
+    verbose: u8,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -114,9 +118,17 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     
-    if cli.verbose > 0 {
-        eprintln!("[*] Verbose level: {}", cli.verbose);
-    }
+    let log_level = match cli.verbose {
+        0 => "warn",
+        1 => "axonerai=debug,axoner_web=debug,warn",
+        _ => "axonerai=trace,axoner_web=trace,debug",
+    };
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(log_level));
+    
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .init();
 
     match cli.command {
         Commands::Serve {
@@ -133,8 +145,9 @@ async fn serve(host: Option<String>, port: Option<u16>, web_root: Option<PathBuf
     let web_root = web_root.unwrap_or_else(|| PathBuf::from("./web"));
 
     let agent = build_agent_from_env().ok();
-
-    let state = AppState { web_root, agent };
+    
+    let cli = Cli::parse();
+    let state = AppState { web_root, agent, verbose: cli.verbose };
 
     let assets_dir = state.web_root.join("assets");
     let assets_service = tower_http::services::ServeDir::new(assets_dir);
@@ -253,6 +266,22 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                 let result = agent.run(text.trim()).await;
                 match result {
                     Ok(reply) => {
+                        let timestamp = chrono::DateTime::<chrono::Utc>::from(SystemTime::now())
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                        
+                        match state.verbose {
+                            0 => info!("[{}] Response: {} bytes", timestamp, reply.len()),
+                            1 => {
+                                let preview = if reply.len() > 77 {
+                                    format!("{}...", &reply[..77])
+                                } else {
+                                    reply.clone()
+                                };
+                                info!("[{}] Response: {} bytes - {}", timestamp, reply.len(), preview);
+                            }
+                            _ => info!("[{}] Response: {} bytes\n{}", timestamp, reply.len(), reply),
+                        }
+
                         let _ = socket
                             .send(WsMessage::Text(
                                 serde_json::to_string(&ServerMsg::Assistant {

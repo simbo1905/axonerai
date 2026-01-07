@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use reqwest;
+use std::env;
+use tracing::debug;
 pub struct WebSearch;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -34,6 +36,8 @@ impl Tool for WebSearch {
    async fn execute(&self, input: Value) -> Result<String> {
         let input: WebSearchInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid calculator input: {}", e))?;
+
+        debug!("WebSearch: query={}", input.search_term);
 
         let search_api_key = env::var("SEARCH_API_KEY")?;
         let cx = env::var("CX_ENGINE")?;

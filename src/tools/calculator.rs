@@ -3,6 +3,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tracing::debug;
 
 pub struct Calculator;
 
@@ -48,6 +49,8 @@ impl Tool for Calculator {
 
         let input: CalculatorInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid calculator input: {}", e))?;
+
+        debug!("Calculator: operation={}, a={}, b={}", input.operation, input.a, input.b);
 
         let result = match input.operation.as_str() {
             "add" => input.a + input.b,
