@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use reqwest;
 use std::env;
+
+#[cfg(feature = "web")]
 use tracing::debug;
 pub struct WebSearch;
 
@@ -37,6 +39,7 @@ impl Tool for WebSearch {
         let input: WebSearchInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid calculator input: {}", e))?;
 
+        #[cfg(feature = "web")]
         debug!("WebSearch: query={}", input.search_term);
 
         let search_api_key = env::var("SEARCH_API_KEY")?;

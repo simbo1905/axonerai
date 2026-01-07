@@ -4,6 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
+
+#[cfg(feature = "web")]
 use tracing::{debug, info};
 
 pub struct WriteFile;
@@ -39,6 +41,7 @@ impl Tool for WriteFile {
         let path_str = input["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path"))?;
         let content = input["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
 
+        #[cfg(feature = "web")]
         debug!("WriteFile: path={}, content_len={}, cwd={:?}", path_str, content.len(), std::env::current_dir()?);
 
         if path_str.contains("..") || path_str.starts_with('/') {
@@ -54,6 +57,7 @@ impl Tool for WriteFile {
         }
 
         fs::write(path, content)?;
+        #[cfg(feature = "web")]
         info!("Wrote {} bytes to '{}'", content.len(), path_str);
         Ok(format!("Successfully wrote {} bytes to '{}'", content.len(), path_str))
     }

@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use reqwest;
 use scraper::{Html, Selector};
 use std::time::Instant;
+
+#[cfg(feature = "web")]
 use tracing::debug;
 
 
@@ -47,6 +49,7 @@ impl Tool for WebScrape {
         let input: WebScrapeInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid calculator input: {}", e))?;
 
+        #[cfg(feature = "web")]
         debug!("WebScrape: {} links to scrape", input.links.len());
 
         println!("{:?}", input);
