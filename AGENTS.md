@@ -47,3 +47,19 @@ Major tasks are delegated to subagents to keep the orchestrator's context lean:
   are numbered 1, 2, 3, … and an insertion between 1 and 2 becomes 1.5 (between 1
   and 1.5 becomes 1.25, and so on — 1.2.3.4-style nesting is allowed). This lets any
   issue be inserted at an exact position in the list without renumbering.
+
+## Emergency Andon (version fact-check)
+
+If an agent finds that a version or dependency the user specified does not exist
+(e.g. not on crates.io, not in a registry, not in a release feed), it must fact-check
+before substituting anything:
+
+1. Confirm the actual latest published version(s) of the named package.
+2. Check the user's own upstream repos for newer work that exists locally but was
+   never published.
+3. If the user appears to have forgotten to publish their latest upstream work:
+   raise a `gh` issue against that upstream repo describing exactly what is missing
+   and what downstream needs, then **halt**. The user goes and publishes; downstream
+   work resumes only against the latest published version.
+4. Never silently downgrade to an older third-party lookalike just to keep moving.
+

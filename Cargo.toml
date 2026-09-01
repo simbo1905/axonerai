@@ -33,3 +33,4 @@ web = ["axum", "tower-http", "futures-util", "tracing", "tracing-subscriber", "c
 
 [dev-dependencies]
 tokio-test = "0.4"
+jtd = "0.3.1"
