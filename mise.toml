@@ -1,2 +1,2 @@
 [tools]
-"github:simbo1905/jtd-wasm" = { version = "0.3.0", version_prefix = "release/", matching = "jtd-codegen" }
+"github:simbo1905/jtd-wasm" = "release-0.3.0"

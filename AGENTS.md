@@ -6,6 +6,11 @@ Working rules for agents operating in this repository.
 
 - `mise.toml` pins project tools (e.g. `jtd-codegen` from simbo1905/jtd-wasm releases).
   Run tools through mise: `mise exec -- jtd-codegen --target js <schema>`.
+- The `jtd-codegen` pin uses the plain github backend form
+  `"github:simbo1905/jtd-wasm" = "release-0.3.0"` — mise autodetects the correct
+  release asset (asset names must follow `<bin>_<version>_<rust-triple>.<ext>` with a
+  bare binary at the archive root) and verifies GitHub attestations, so no
+  `matching`/`version_prefix`/`asset_pattern` options are needed.
 - Scratch files go in `.tmp/` (gitignored). **Avoid `/tmp`** — it trips sandbox
   permission errors on this host; use `.tmp/` for all scratch output.
 
