@@ -1,4 +1,5 @@
 pub mod provider;
+pub mod wire;
 pub mod config;
 pub mod mistral;
 pub mod opencode;
@@ -22,3 +23,4 @@ pub use tool::{Tool, ToolRegistry};
 pub use tools::{Calculator, WebSearch, WebScrape};
 pub use file_session_manager::FileSessionManager;
 pub use session::Session;
+pub use wire::{ClientMsg, ServerMsg};

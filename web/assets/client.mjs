@@ -43,7 +43,7 @@ async function connect({ onOpen, onClose, onError } = {}) {
   socket.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
-      if (msg.type === "assistant") {
+      if (msg._type === "assistant") {
         const id = msg.id || null;
         if (id && pending.has(id)) {
           pending.get(id).resolve(msg.text || "");
@@ -51,7 +51,7 @@ async function connect({ onOpen, onClose, onError } = {}) {
         }
         return;
       }
-      if (msg.type === "error") {
+      if (msg._type === "error") {
         const id = msg.id || null;
         const err = new Error(msg.message || "error");
         if (id && pending.has(id)) {
@@ -98,7 +98,7 @@ async function sendPrompt(text) {
     throw new Error("not connected");
   }
   const id = randomID();
-  const payload = { type: "prompt", id, text };
+  const payload = { _type: "prompt", id, text };
 
   const p = new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });

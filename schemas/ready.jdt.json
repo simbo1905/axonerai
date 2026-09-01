@@ -1,0 +1,14 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["ready"]
+    },
+    "version": {
+      "type": "string"
+    },
+    "websocket_path": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

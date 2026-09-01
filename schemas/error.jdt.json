@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["error"]
+    },
+    "id": {
+      "type": "string",
+      "nullable": true
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

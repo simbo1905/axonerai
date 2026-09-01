@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["assistant"]
+    },
+    "id": {
+      "type": "string",
+      "nullable": true
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

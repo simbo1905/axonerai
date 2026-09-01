@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["pong"]
+    },
+    "id": {
+      "type": "string",
+      "nullable": true
+    }
+  },
+  "additionalProperties": false
+}

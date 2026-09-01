@@ -15,6 +15,7 @@ use tracing::info;
 
 use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry};
 use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
+use axonerai::wire::{ClientMsg, ServerMsg};
 
 #[derive(Parser, Debug)]
 #[command(name = "agt", version, about = "AxonerAI tooling")]
@@ -57,33 +58,6 @@ struct AppState {
     web_root: PathBuf,
     agent: Option<Arc<Agent>>,
     verbose: u8,
-}
-
-#[derive(serde::Deserialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMsg {
-    Prompt { id: Option<String>, text: String },
-    Ping { id: Option<String> },
-}
-
-#[derive(serde::Serialize, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMsg<'a> {
-    Ready {
-        version: &'a str,
-        websocket_path: &'a str,
-    },
-    Pong {
-        id: Option<&'a str>,
-    },
-    Assistant {
-        id: Option<&'a str>,
-        text: &'a str,
-    },
-    Error {
-        id: Option<&'a str>,
-        message: &'a str,
-    },
 }
 
 /// Load environment variables from a .env file if it exists
@@ -237,7 +211,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                 version: env!("CARGO_PKG_VERSION"),
                 websocket_path: "/ws",
             })
-            .unwrap_or_else(|_| r#"{"type":"ready","version":"unknown","websocket_path":"/ws"}"#.to_string()),
+            .unwrap_or_else(|_| r#"{"_type":"ready","version":"unknown","websocket_path":"/ws"}"#.to_string()),
         ))
         .await;
 
@@ -256,7 +230,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             id: None,
                             message: &format!("invalid message: {e}"),
                         })
-                        .unwrap_or_else(|_| r#"{"type":"error","message":"invalid message"}"#.to_string()),
+                        .unwrap_or_else(|_| r#"{"_type":"error","message":"invalid message"}"#.to_string()),
                     ))
                     .await;
                 continue;
@@ -270,7 +244,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                         serde_json::to_string(&ServerMsg::Pong {
                             id: id.as_deref(),
                         })
-                        .unwrap_or_else(|_| r#"{"type":"pong"}"#.to_string()),
+                        .unwrap_or_else(|_| r#"{"_type":"pong"}"#.to_string()),
                     ))
                     .await;
             }
@@ -284,7 +258,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     "No provider configured. Set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY.",
                             })
                             .unwrap_or_else(|_| {
-                                r#"{"type":"error","message":"No provider configured"}"#.to_string()
+                                r#"{"_type":"error","message":"No provider configured"}"#.to_string()
                             }),
                         ))
                         .await;
@@ -317,7 +291,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     text: &reply,
                                 })
                                 .unwrap_or_else(|_| {
-                                    r#"{"type":"assistant","text":"(serialization error)"}"#.to_string()
+                                    r#"{"_type":"assistant","text":"(serialization error)"}"#.to_string()
                                 }),
                             ))
                             .await;
@@ -329,7 +303,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     id: id.as_deref(),
                                     message: &format!("agent error: {e}"),
                                 })
-                                .unwrap_or_else(|_| r#"{"type":"error","message":"agent error"}"#.to_string()),
+                                .unwrap_or_else(|_| r#"{"_type":"error","message":"agent error"}"#.to_string()),
                             ))
                             .await;
                     }
