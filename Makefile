@@ -1,10 +1,14 @@
 JTD_CODEGEN ?= mise exec -- jtd-codegen
+TSC         ?= tsc
 SCHEMA_DIR  := schemas
 OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators
+.PHONY: validators clean-validators check-types
+
+check-types:
+	$(TSC) --noEmit
 
 validators: $(VALIDATORS) $(OUT_DIR)/validators.mjs
 

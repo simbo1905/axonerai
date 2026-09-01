@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "/generated/validators.mjs": ["./web/types/generated-validators.d.ts"],
+      "*/generated/validators.mjs": ["./web/types/generated-validators.d.ts"],
+      "/src/wire.mjs": ["./web/src/wire.mjs"],
+      "*/src/wire.mjs": ["./web/src/wire.mjs"]
+    }
+  },
+  "include": [
+    "web/src/**/*",
+    "web/test/**/*",
+    "web/types/**/*"
+  ],
+  "exclude": [
+    "web/generated",
+    "target",
+    "node_modules",
+    ".tmp"
+  ]
+}

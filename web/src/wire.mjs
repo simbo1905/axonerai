@@ -1,3 +1,4 @@
+// @ts-check
 import {
   validateReady,
   validatePong,
@@ -62,7 +63,7 @@ export function deepFreeze(value) {
     }
     seen.add(current);
     for (const key of Reflect.ownKeys(current)) {
-      freeze(current[key]);
+      freeze(/** @type {Record<PropertyKey, unknown>} */ (current)[key]);
     }
     Object.freeze(current);
     return current;
@@ -95,14 +96,14 @@ export function parseWireEvent(data) {
       `unknown wire event _type: ${JSON.stringify(type ?? null)}`,
     );
   }
-  const errors = validators[type](data);
+  const errors = validators[/** @type {keyof typeof validators} */ (type)](data);
   if (errors.length > 0) {
     const detail = errors
       .map((e) => `${e.instancePath || "/"} (${e.schemaPath})`)
       .join(", ");
     throw new Error(`invalid ${type} event: ${detail}`);
   }
-  return deepFreeze(data);
+  return /** @type {WireEvent} */ (deepFreeze(data));
 }
 
 /**

@@ -1,6 +1,11 @@
+// @ts-check
 import test from "node:test";
 import assert from "node:assert/strict";
 import { deepFreeze, parseWireEvent, parseWireEventText } from "./wire.mjs";
+
+/**
+ * @import { ReadyEvent, PongEvent, AssistantEvent, ErrorEvent } from "./wire.mjs"
+ */
 
 test("deepFreeze freezes nested objects and arrays", () => {
   const value = deepFreeze({ a: { b: [1, { c: 2 }] } });
@@ -11,11 +16,11 @@ test("deepFreeze freezes nested objects and arrays", () => {
 });
 
 test("ready event parses and is deeply frozen", () => {
-  const event = parseWireEvent({
+  const event = /** @type {ReadyEvent} */ (parseWireEvent({
     _type: "ready",
     version: "0.1.1",
     websocket_path: "/ws",
-  });
+  }));
   assert.equal(event._type, "ready");
   assert.equal(event.version, "0.1.1");
   assert.equal(event.websocket_path, "/ws");
@@ -23,23 +28,23 @@ test("ready event parses and is deeply frozen", () => {
 });
 
 test("pong event parses and is deeply frozen", () => {
-  const event = parseWireEvent({ _type: "pong", id: null });
+  const event = /** @type {PongEvent} */ (parseWireEvent({ _type: "pong", id: null }));
   assert.deepEqual(event, { _type: "pong", id: null });
   assert.ok(Object.isFrozen(event));
 });
 
 test("assistant event parses and is deeply frozen", () => {
-  const event = parseWireEvent({
+  const event = /** @type {AssistantEvent} */ (parseWireEvent({
     _type: "assistant",
     id: "req_1",
     text: "hello",
-  });
+  }));
   assert.equal(event.text, "hello");
   assert.ok(Object.isFrozen(event));
 });
 
 test("error event parses and is deeply frozen", () => {
-  const event = parseWireEvent({ _type: "error", id: null, message: "boom" });
+  const event = /** @type {ErrorEvent} */ (parseWireEvent({ _type: "error", id: null, message: "boom" }));
   assert.equal(event.message, "boom");
   assert.ok(Object.isFrozen(event));
 });

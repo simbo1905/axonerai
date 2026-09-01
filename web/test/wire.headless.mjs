@@ -1,3 +1,4 @@
+// @ts-check
 import {
   validateReady,
   validatePong,
@@ -16,6 +17,7 @@ function throws(fn) {
   return undefined;
 }
 
+/** @type {{ name: string, ok: boolean, error?: string }[]} */
 const details = [];
 let pass = 0;
 let fail = 0;
