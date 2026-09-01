@@ -20,7 +20,16 @@ async-trait = "0.1"
 env = "1.0.1"
 scraper = "0.24.0"
 uuid = { version = "1.18.1", features = ["v4"] }
+clap = { version = "4.5.27", features = ["derive"] }
+axum = { version = "0.7.9", features = ["ws"], optional = true }
+tower-http = { version = "0.5.2", features = ["fs"], optional = true }
+futures-util = { version = "0.3.31", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
 
+[features]
+web = ["axum", "tower-http", "futures-util", "tracing", "tracing-subscriber", "chrono"]
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -121,6 +121,35 @@ let provider = OpenAIProvider::new(api_key, "gpt-4o".to_string());
 - **Calculator** - Basic arithmetic operations
 - **WebSearch** - Search the web via Google Custom Search API
 - **WebScraper** - Scrape content from URLs
+- **WriteFile** - Write content to files
+
+## Running the Demo
+
+AxonerAI includes two demo applications:
+
+### Minimal Demo (`axoner`)
+A stateless CLI agent with basic tool usage:
+
+```bash
+cargo run --example axoner --release
+```
+
+### Web UI Demo (`axoner-web`)
+An interactive web UI with WebSocket support for real-time agent communication:
+
+```bash
+# Default (warn level logging)
+cargo run --example axoner-web --features web --release -- serve --port 9090
+
+# With verbose logging (debug level)
+cargo run --example axoner-web --features web --release -- -v serve --port 9090
+```
+
+Open `http://127.0.0.1:9090/` in your browser.
+
+The web demo requires:
+- `GROQ_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` environment variable (or in `.env` file)
+- Optional: `GOOGLE_API_KEY` and `GOOGLE_CX` for web search
 
 ## Creating Custom Tools
 

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agt serve</title>
+
+    <!-- React + Babel (single-file SPA; no node/bun) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+      body {
+        margin: 0;
+        background: #0b1220;
+        color: #e5e7eb;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial,
+          "Apple Color Emoji", "Segoe UI Emoji";
+      }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: #0f172a; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 6px; }
+      ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+  </head>
+
+  <body>
+    <div id="root">
+      <div class="min-h-screen flex items-center justify-center">
+        <div class="text-slate-400 animate-pulse">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Vanilla ESM2020 client that exposes window.AgtClient -->
+    <script type="module" src="/assets/client.mjs"></script>
+
+    <script type="text/babel" data-presets="env,react">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      function formatTime(ts) {
+        const d = new Date(ts);
+        return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      }
+
+      function App() {
+        const [connected, setConnected] = useState(false);
+        const [status, setStatus] = useState("Connecting…");
+        const [input, setInput] = useState("");
+        const [busy, setBusy] = useState(false);
+        const [messages, setMessages] = useState(() => [
+          {
+            role: "system",
+            text:
+              "agt serve: type a message below. The browser talks to the agent over WebSockets.",
+            ts: Date.now(),
+          },
+        ]);
+        const listRef = useRef(null);
+
+        useEffect(() => {
+          let dispose = null;
+          let client = null;
+
+          async function start() {
+            try {
+              client = await window.AgtClient.connect({
+                onOpen: () => {
+                  setConnected(true);
+                  setStatus("Connected");
+                },
+                onClose: () => {
+                  setConnected(false);
+                  setStatus("Disconnected (refresh to reconnect)");
+                },
+                onError: (e) => {
+                  setConnected(false);
+                  setStatus("WebSocket error");
+                  console.error(e);
+                },
+              });
+              dispose = client.dispose;
+            } catch (e) {
+              setStatus(String(e?.message || e));
+            }
+          }
+          start();
+
+          return () => {
+            if (dispose) dispose();
+          };
+        }, []);
+
+        useEffect(() => {
+          const el = listRef.current;
+          if (!el) return;
+          el.scrollTop = el.scrollHeight;
+        }, [messages.length]);
+
+        const canSend = connected && !busy && input.trim().length > 0;
+
+        async function send() {
+          const text = input.trim();
+          if (!text) return;
+          setInput("");
+          setBusy(true);
+          setMessages((m) => m.concat([{ role: "user", text, ts: Date.now() }]));
+
+          try {
+            const reply = await window.AgtClient.sendPrompt(text);
+            setMessages((m) => m.concat([{ role: "assistant", text: reply, ts: Date.now() }]));
+          } catch (e) {
+            setMessages((m) =>
+              m.concat([
+                { role: "error", text: String(e?.message || e), ts: Date.now() },
+              ])
+            );
+          } finally {
+            setBusy(false);
+          }
+        }
+
+        function onKeyDown(e) {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            if (canSend) send();
+          }
+        }
+
+        const headerPill = connected
+          ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30"
+          : "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/30";
+
+        return (
+          <div className="min-h-screen">
+            <div className="max-w-5xl mx-auto px-4 py-6">
+              <header className="mb-5">
+                <div className="flex items-center justify-between gap-4 flex-wrap">
+                  <div>
+                    <div className="text-2xl font-semibold text-white">agt serve</div>
+                    <div className="text-sm text-slate-400">
+                      Single-file SPA (React + Babel) over WebSockets.
+                    </div>
+                  </div>
+                  <div className={`px-3 py-1.5 rounded-full text-xs font-semibold ${headerPill}`}>
+                    {status}
+                  </div>
+                </div>
+              </header>
+
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/40 shadow-xl">
+                <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                  <div className="text-sm font-semibold text-slate-200">Chat</div>
+                  <div className="text-xs text-slate-400">
+                    {busy ? "Agent running…" : connected ? "Ready" : "Offline"}
+                  </div>
+                </div>
+
+                <div
+                  ref={listRef}
+                  className="p-4 space-y-3 max-h-[65vh] overflow-auto"
+                >
+                  {messages.map((m, idx) => {
+                    const isUser = m.role === "user";
+                    const isAssistant = m.role === "assistant";
+                    const isError = m.role === "error";
+                    const bubble =
+                      isUser
+                        ? "bg-blue-500/15 ring-1 ring-blue-500/30"
+                        : isAssistant
+                        ? "bg-slate-800/70 ring-1 ring-slate-700/70"
+                        : isError
+                        ? "bg-red-500/15 ring-1 ring-red-500/30"
+                        : "bg-slate-800/40 ring-1 ring-slate-700/40";
+
+                    const who =
+                      isUser ? "You" : isAssistant ? "Agent" : isError ? "Error" : "Info";
+
+                    return (
+                      <div key={idx} className="flex gap-3">
+                        <div className="w-16 shrink-0 text-xs text-slate-500 pt-1">
+                          <div className="font-semibold text-slate-400">{who}</div>
+                          <div className="text-[10px]">{formatTime(m.ts)}</div>
+                        </div>
+                        <div className={`flex-1 rounded-xl px-3 py-2 whitespace-pre-wrap ${bubble}`}>
+                          {m.text}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="p-4 border-t border-slate-800">
+                  <div className="flex gap-3 items-end">
+                    <textarea
+                      className="flex-1 resize-none rounded-xl bg-slate-950/40 border border-slate-800 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      rows={3}
+                      placeholder={connected ? "Type a message… (Enter to send, Shift+Enter newline)" : "Not connected…"}
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={onKeyDown}
+                      disabled={!connected || busy}
+                    />
+                    <button
+                      className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                        canSend
+                          ? "bg-blue-600 hover:bg-blue-500 text-white"
+                          : "bg-slate-800 text-slate-500 cursor-not-allowed"
+                      }`}
+                      onClick={send}
+                      disabled={!canSend}
+                      title={connected ? "" : "WebSocket disconnected"}
+                    >
+                      Send
+                    </button>
+                  </div>
+
+                  <div className="mt-2 text-xs text-slate-500">
+                    WebSocket endpoint: <span className="font-mono text-slate-400">/ws</span>
+                  </div>
+                </div>
+              </div>
+
+              <footer className="mt-5 text-xs text-slate-600">
+                Tip: set <span className="font-mono text-slate-500">OPENAI_API_KEY</span>,{" "}
+                <span className="font-mono text-slate-500">GROQ_API_KEY</span>, or{" "}
+                <span className="font-mono text-slate-500">ANTHROPIC_API_KEY</span> before starting the server.
+              </footer>
+            </div>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
+

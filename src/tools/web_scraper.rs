@@ -7,6 +7,9 @@ use reqwest;
 use scraper::{Html, Selector};
 use std::time::Instant;
 
+#[cfg(feature = "web")]
+use tracing::debug;
+
 
 pub struct WebScrape;
 
@@ -45,6 +48,9 @@ impl Tool for WebScrape {
     async fn execute(&self, input: Value) -> Result<String> {
         let input: WebScrapeInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid calculator input: {}", e))?;
+
+        #[cfg(feature = "web")]
+        debug!("WebScrape: {} links to scrape", input.links.len());
 
         println!("{:?}", input);
         let titles = input.titles;
