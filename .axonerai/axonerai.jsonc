@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "default_provider": "mistral",
+  "default_model": "zai-glm-5-2",
+  "providers": {
+    "mistral": {
+      "name": "Mistral",
+      "endpoint": "https://api.mistral.ai/v1/chat/completions",
+      "env_key": "MISTRAL_API_KEY",
+      "default_model": "zai-glm-5-2",
+      "models": [
+        {
+          "id": "zai-glm-5-2",
+          "name": "Z.ai GLM 5.2",
+          "thinking": false,
+          "thinking_levels": []
+        }
+      ]
+    },
+    "opencode-zen": {
+      "name": "OpenCode Zen",
+      "endpoint": "https://opencode.ai/zen/v1/chat/completions",
+      "env_key": "OPENCODE_API_KEY",
+      "default_model": "glm-5.2",
+      "models": [
+        {
+          "id": "glm-5.2",
+          "name": "GLM 5.2",
+          "thinking": false,
+          "thinking_levels": []
+        },
+        {
+          "id": "glm-5.1",
+          "name": "GLM 5.1",
+          "thinking": false,
+          "thinking_levels": []
+        }
+      ]
+    },
+    "opencode-go": {
+      "name": "OpenCode Go",
+      "endpoint": "https://opencode.ai/zen/go/v1/chat/completions",
+      "env_key": "OPENCODE_API_KEY",
+      "default_model": "glm-5.2",
+      "models": [
+        {
+          "id": "glm-5.2",
+          "name": "GLM 5.2",
+          "thinking": false,
+          "thinking_levels": []
+        },
+        {
+          "id": "glm-5.3",
+          "name": "GLM 5.3",
+          "thinking": false,
+          "thinking_levels": []
+        }
+      ]
+    },
+    "groq": {
+      "name": "Groq",
+      "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+      "env_key": "GROQ_API_KEY",
+      "default_model": "openai/gpt-oss-120b",
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "name": "GPT-OSS 120B",
+          "thinking": false,
+          "thinking_levels": []
+        }
+      ]
+    }
+  }
+}

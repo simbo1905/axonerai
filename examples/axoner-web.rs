@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 use tracing::info;
 
-use axonerai::{Agent, AnthropicProvider, GroqProvider, OpenAIProvider, ToolRegistry};
+use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry};
 use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
 
 #[derive(Parser, Debug)]
@@ -41,6 +41,14 @@ enum Commands {
          /// Directory to serve `index.html` + `assets/` from (default: ./web)
          #[arg(long)]
          web_root: Option<PathBuf>,
+
+         /// Provider to use (overrides config default: mistral, opencode-zen, opencode-go, groq)
+         #[arg(long)]
+         provider: Option<String>,
+
+         /// Model ID to use (overrides provider default)
+         #[arg(long)]
+         model: Option<String>,
      },
 }
 
@@ -135,17 +143,34 @@ async fn main() -> anyhow::Result<()> {
             host,
             port,
             web_root,
-        } => serve(host, port, web_root).await,
+            provider,
+            model,
+        } => serve(host, port, web_root, provider, model).await,
     }
 }
 
-async fn serve(host: Option<String>, port: Option<u16>, web_root: Option<PathBuf>) -> anyhow::Result<()> {
+async fn serve(
+    host: Option<String>,
+    port: Option<u16>,
+    web_root: Option<PathBuf>,
+    provider_override: Option<String>,
+    model_override: Option<String>,
+) -> anyhow::Result<()> {
     let host = host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = port.unwrap_or(0);
     let web_root = web_root.unwrap_or_else(|| PathBuf::from("./web"));
 
-    let agent = build_agent_from_env().ok();
-    
+    let config = AppConfig::load()?;
+
+    let provider_name = provider_override
+        .unwrap_or_else(|| std::env::var("AXONERAI_PROVIDER").unwrap_or_else(|_| config.default_provider.clone()));
+
+    let model_id = model_override
+        .or_else(|| std::env::var("AXONERAI_MODEL").ok())
+        .unwrap_or_else(|| config.default_model_id(&provider_name).unwrap_or_default().to_string());
+
+    let agent = build_agent_from_config(&config, &provider_name, &model_id).ok();
+
     let cli = Cli::parse();
     let state = AppState { web_root, agent, verbose: cli.verbose };
 
@@ -178,8 +203,11 @@ async fn serve(host: Option<String>, port: Option<u16>, web_root: Option<PathBuf
     println!("  WebSocket:  ws://{actual_addr}/ws");
     println!("  Web root:   {}", state.web_root.display());
     if state.agent.is_none() {
-        println!("  Note: no provider configured (set one of OPENAI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY)");
+        println!("  Note: no provider configured (set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY)");
     }
+    println!();
+    println!("  Provider:   {}", provider_name);
+    println!("  Model:      {}", model_id);
     println!();
 
     axum::serve(listener, app)
@@ -253,7 +281,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             serde_json::to_string(&ServerMsg::Error {
                                 id: id.as_deref(),
                                 message:
-                                    "No provider configured. Set OPENAI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY.",
+                                    "No provider configured. Set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY.",
                             })
                             .unwrap_or_else(|_| {
                                 r#"{"type":"error","message":"No provider configured"}"#.to_string()
@@ -311,15 +339,41 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
     }
 }
 
-fn build_agent_from_env() -> anyhow::Result<Arc<Agent>> {
-    let provider: Box<dyn axonerai::provider::Provider> = if let Ok(key) = std::env::var("OPENAI_API_KEY") {
-        Box::new(OpenAIProvider::new(key))
-    } else if let Ok(key) = std::env::var("GROQ_API_KEY") {
-        Box::new(GroqProvider::new(key))
-    } else if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        Box::new(AnthropicProvider::new(key))
-    } else {
-        anyhow::bail!("no provider env var found");
+fn build_agent_from_config(config: &AppConfig, provider_name: &str, model_id: &str) -> anyhow::Result<Arc<Agent>> {
+    let api_key = config.resolve_api_key(provider_name)?;
+    let endpoint = config.endpoint(provider_name)?;
+
+    let provider: Box<dyn axonerai::provider::Provider> = match provider_name {
+        "mistral" => {
+            let mut p = MistralProvider::new(api_key);
+            if !model_id.is_empty() {
+                p = p.with_model(model_id.to_string());
+            }
+            Box::new(p)
+        }
+        "groq" => {
+            let mut p = GroqProvider::new(api_key);
+            if !model_id.is_empty() {
+                p = p.with_model(model_id.to_string());
+            }
+            Box::new(p)
+        }
+        "openai" => {
+            let mut p = OpenAIProvider::new(api_key);
+            if !model_id.is_empty() {
+                p = p.with_model(model_id.to_string());
+            }
+            Box::new(p)
+        }
+        // opencode-zen, opencode-go, or any other OpenAI-compatible provider
+        _ => {
+            let model = if model_id.is_empty() {
+                config.default_model_id(provider_name)?.to_string()
+            } else {
+                model_id.to_string()
+            };
+            Box::new(OpenCodeProvider::new(api_key, endpoint.to_string(), model))
+        }
     };
 
     let mut registry = ToolRegistry::new();

@@ -4,17 +4,17 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub struct GroqProvider {
+pub struct MistralProvider {
     api_key: String,
     model: String,
     client: reqwest::Client,
 }
 
-impl GroqProvider {
+impl MistralProvider {
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
-            model: "openai/gpt-oss-120b".to_string(),
+            model: "zai-glm-5-2".to_string(),
             client: reqwest::Client::new(),
         }
     }
@@ -26,16 +26,15 @@ impl GroqProvider {
 }
 
 #[async_trait]
-impl Provider for GroqProvider {
+impl Provider for MistralProvider {
     async fn complete(
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Tool>>,
         max_tokens: Option<u32>,
-        system_prompt: Option<String>
+        system_prompt: Option<String>,
     ) -> Result<CompletionResponse> {
-
-        let mut complete_message:Vec<Value> = Vec::new();
+        let mut complete_message: Vec<Value> = Vec::new();
 
         if let Some(sys_prompt) = system_prompt {
             complete_message.push(json!({
@@ -49,15 +48,13 @@ impl Provider for GroqProvider {
             "messages": messages,
         });
 
-        // let tool_clone = tools.clone();
-
         if let Some(max_tokens) = max_tokens {
             body["max_tokens"] = json!(max_tokens);
         }
 
         // Add tools if provided (OpenAI-compatible format)
         if let Some(tools) = tools {
-            let groq_tools: Vec<Value> = tools
+            let mistral_tools: Vec<Value> = tools
                 .iter()
                 .map(|t| {
                     json!({
@@ -70,35 +67,30 @@ impl Provider for GroqProvider {
                     })
                 })
                 .collect();
-            body["tools"] = json!(groq_tools);
+            body["tools"] = json!(mistral_tools);
         }
-
 
         let response = self
             .client
-            .post("https://api.groq.com/openai/v1/chat/completions")
+            .post("https://api.mistral.ai/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
+            .header("Content-type", "application/json")
             .json(&body)
             .send()
             .await?;
 
-        
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await?;
-            return Err(anyhow!("Groq API error {}: {}", status, error_text));
+            return Err(anyhow!("Mistral API error {}: {}", status, error_text));
         }
 
-        let api_response: GroqResponse = response.json().await?;
-        
-        // println!("DEBUG: Groq response: {}", serde_json::to_string_pretty(&api_response)?);
-
+        let api_response: MistralResponse = response.json().await?;
 
         let choice = api_response
             .choices
             .first()
-            .ok_or_else(|| anyhow!("No choices in Groq response"))?;
+            .ok_or_else(|| anyhow!("No choices in Mistral response"))?;
 
         let text = choice.message.content.clone();
 
@@ -135,9 +127,9 @@ impl Provider for GroqProvider {
     }
 }
 
-// Groq API response structures (OpenAI-compatible)
+// Mistral API response structures (OpenAI-compatible)
 #[derive(Debug, Deserialize, Serialize)]
-struct GroqResponse {
+struct MistralResponse {
     choices: Vec<Choice>,
 }
 
@@ -150,11 +142,11 @@ struct Choice {
 #[derive(Debug, Deserialize, Serialize)]
 struct ResponseMessage {
     content: Option<String>,
-    tool_calls: Option<Vec<GroqToolCall>>,
+    tool_calls: Option<Vec<MistralToolCall>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct GroqToolCall {
+struct MistralToolCall {
     id: String,
     function: FunctionCall,
 }

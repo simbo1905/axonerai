@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-use axonerai::{Agent, AnthropicProvider, GroqProvider, OpenAIProvider, ToolRegistry};
+use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry};
 use axonerai::provider::Provider;
 use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
 use uuid::Uuid;
@@ -15,18 +13,13 @@ fn load_env_file() {
         let reader = BufReader::new(file);
         for line in reader.lines() {
             if let Ok(line) = line {
-                // Skip empty lines and comments
                 let line = line.trim();
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-
-                // Parse key=value pairs
                 if let Some((key, value)) = line.split_once('=') {
                     let key = key.trim();
                     let value = value.trim();
-                    
-                    // Only set if not already set in environment
                     if env::var(key).is_err() {
                         unsafe {
                             env::set_var(key, value);
@@ -42,24 +35,36 @@ fn load_env_file() {
 async fn main() -> anyhow::Result<()> {
     load_env_file();
 
-    let provider_type = env::var("PROVIDER_TYPE").unwrap_or("groq".to_string());
+    let config = AppConfig::load()?;
+
+    let provider_type = env::var("AXONERAI_PROVIDER")
+        .unwrap_or_else(|_| config.default_provider.clone());
+
+    let model_id = env::var("AXONERAI_MODEL")
+        .unwrap_or_else(|_| config.default_model_id(&provider_type).unwrap_or_default().to_string());
+
+    let api_key = config.resolve_api_key(&provider_type)?;
+    let endpoint = config.endpoint(&provider_type)?;
 
     let provider: Box<dyn Provider> = match provider_type.as_str() {
-        "anthropic" => {
-            let api_key = env::var("ANTHROPIC_API_KEY")
-                .expect("ANTHROPIC_API_KEY environment variable not set");
-            Box::new(AnthropicProvider::new(api_key))
-        },
+        "mistral" => {
+            let mut p = MistralProvider::new(api_key);
+            if !model_id.is_empty() { p = p.with_model(model_id); }
+            Box::new(p)
+        }
+        "groq" => {
+            let mut p = GroqProvider::new(api_key);
+            if !model_id.is_empty() { p = p.with_model(model_id); }
+            Box::new(p)
+        }
         "openai" => {
-            let api_key = env::var("OPENAI_API_KEY")
-                .expect("OPENAI_API_KEY environment variable not set");
-            Box::new(OpenAIProvider::new(api_key))
-        },
-        "groq" | _ => {
-            let api_key = env::var("GROQ_API_KEY")
-                .expect("GROQ_API_KEY environment variable not set");
-            Box::new(GroqProvider::new(api_key))
-        },
+            let mut p = OpenAIProvider::new(api_key);
+            if !model_id.is_empty() { p = p.with_model(model_id); }
+            Box::new(p)
+        }
+        _ => {
+            Box::new(OpenCodeProvider::new(api_key, endpoint.to_string(), model_id))
+        }
     };
 
     let mut tools = ToolRegistry::new();

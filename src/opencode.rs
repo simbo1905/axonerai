@@ -4,17 +4,22 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub struct GroqProvider {
+/// Generic OpenAI-compatible provider used for OpenCode Zen and OpenCode Go.
+/// The endpoint, API key, and model are all configurable so the same code
+/// serves both the Zen and Go endpoints (or any other OpenAI-compatible endpoint).
+pub struct OpenCodeProvider {
     api_key: String,
     model: String,
+    endpoint: String,
     client: reqwest::Client,
 }
 
-impl GroqProvider {
-    pub fn new(api_key: String) -> Self {
+impl OpenCodeProvider {
+    pub fn new(api_key: String, endpoint: String, model: String) -> Self {
         Self {
             api_key,
-            model: "openai/gpt-oss-120b".to_string(),
+            model,
+            endpoint,
             client: reqwest::Client::new(),
         }
     }
@@ -26,30 +31,28 @@ impl GroqProvider {
 }
 
 #[async_trait]
-impl Provider for GroqProvider {
+impl Provider for OpenCodeProvider {
     async fn complete(
         &self,
         messages: Vec<Message>,
         tools: Option<Vec<Tool>>,
         max_tokens: Option<u32>,
-        system_prompt: Option<String>
+        system_prompt: Option<String>,
     ) -> Result<CompletionResponse> {
-
-        let mut complete_message:Vec<Value> = Vec::new();
-
-        if let Some(sys_prompt) = system_prompt {
-            complete_message.push(json!({
-                "role": "system",
-                "content": sys_prompt
-            }));
-        }
-
         let mut body = json!({
             "model": self.model,
             "messages": messages,
         });
 
-        // let tool_clone = tools.clone();
+        if let Some(sys_prompt) = system_prompt {
+            // Prepend system message
+            if let Some(arr) = body["messages"].as_array_mut() {
+                arr.insert(0, json!({
+                    "role": "system",
+                    "content": sys_prompt
+                }));
+            }
+        }
 
         if let Some(max_tokens) = max_tokens {
             body["max_tokens"] = json!(max_tokens);
@@ -57,7 +60,7 @@ impl Provider for GroqProvider {
 
         // Add tools if provided (OpenAI-compatible format)
         if let Some(tools) = tools {
-            let groq_tools: Vec<Value> = tools
+            let tool_defs: Vec<Value> = tools
                 .iter()
                 .map(|t| {
                     json!({
@@ -70,35 +73,30 @@ impl Provider for GroqProvider {
                     })
                 })
                 .collect();
-            body["tools"] = json!(groq_tools);
+            body["tools"] = json!(tool_defs);
         }
-
 
         let response = self
             .client
-            .post("https://api.groq.com/openai/v1/chat/completions")
+            .post(&self.endpoint)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
+            .header("Content-type", "application/json")
             .json(&body)
             .send()
             .await?;
 
-        
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await?;
-            return Err(anyhow!("Groq API error {}: {}", status, error_text));
+            return Err(anyhow!("OpenCode API error {}: {}", status, error_text));
         }
 
-        let api_response: GroqResponse = response.json().await?;
-        
-        // println!("DEBUG: Groq response: {}", serde_json::to_string_pretty(&api_response)?);
-
+        let api_response: OpenCodeResponse = response.json().await?;
 
         let choice = api_response
             .choices
             .first()
-            .ok_or_else(|| anyhow!("No choices in Groq response"))?;
+            .ok_or_else(|| anyhow!("No choices in OpenCode response"))?;
 
         let text = choice.message.content.clone();
 
@@ -135,9 +133,9 @@ impl Provider for GroqProvider {
     }
 }
 
-// Groq API response structures (OpenAI-compatible)
+// OpenCode API response structures (OpenAI-compatible)
 #[derive(Debug, Deserialize, Serialize)]
-struct GroqResponse {
+struct OpenCodeResponse {
     choices: Vec<Choice>,
 }
 
@@ -150,11 +148,11 @@ struct Choice {
 #[derive(Debug, Deserialize, Serialize)]
 struct ResponseMessage {
     content: Option<String>,
-    tool_calls: Option<Vec<GroqToolCall>>,
+    tool_calls: Option<Vec<OpenCodeToolCall>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct GroqToolCall {
+struct OpenCodeToolCall {
     id: String,
     function: FunctionCall,
 }

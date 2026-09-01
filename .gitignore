@@ -2,3 +2,4 @@
 .env
 server_direct.log
 .tmp
+.test_dir
