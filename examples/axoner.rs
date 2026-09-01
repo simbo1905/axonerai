@@ -1,6 +1,8 @@
-use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry};
 use axonerai::provider::Provider;
 use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
+use axonerai::{
+    Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
+};
 use uuid::Uuid;
 
 /// Load environment variables from a .env file if it exists
@@ -37,11 +39,15 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig::load()?;
 
-    let provider_type = env::var("AXONERAI_PROVIDER")
-        .unwrap_or_else(|_| config.default_provider.clone());
+    let provider_type =
+        env::var("AXONERAI_PROVIDER").unwrap_or_else(|_| config.default_provider.clone());
 
-    let model_id = env::var("AXONERAI_MODEL")
-        .unwrap_or_else(|_| config.default_model_id(&provider_type).unwrap_or_default().to_string());
+    let model_id = env::var("AXONERAI_MODEL").unwrap_or_else(|_| {
+        config
+            .default_model_id(&provider_type)
+            .unwrap_or_default()
+            .to_string()
+    });
 
     let api_key = config.resolve_api_key(&provider_type)?;
     let endpoint = config.endpoint(&provider_type)?;
@@ -49,22 +55,30 @@ async fn main() -> anyhow::Result<()> {
     let provider: Box<dyn Provider> = match provider_type.as_str() {
         "mistral" => {
             let mut p = MistralProvider::new(api_key);
-            if !model_id.is_empty() { p = p.with_model(model_id); }
+            if !model_id.is_empty() {
+                p = p.with_model(model_id);
+            }
             Box::new(p)
         }
         "groq" => {
             let mut p = GroqProvider::new(api_key);
-            if !model_id.is_empty() { p = p.with_model(model_id); }
+            if !model_id.is_empty() {
+                p = p.with_model(model_id);
+            }
             Box::new(p)
         }
         "openai" => {
             let mut p = OpenAIProvider::new(api_key);
-            if !model_id.is_empty() { p = p.with_model(model_id); }
+            if !model_id.is_empty() {
+                p = p.with_model(model_id);
+            }
             Box::new(p)
         }
-        _ => {
-            Box::new(OpenCodeProvider::new(api_key, endpoint.to_string(), model_id))
-        }
+        _ => Box::new(OpenCodeProvider::new(
+            api_key,
+            endpoint.to_string(),
+            model_id,
+        )),
     };
 
     let mut tools = ToolRegistry::new();

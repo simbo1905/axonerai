@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -111,81 +111,89 @@ impl AppConfig {
             providers: {
                 let mut m = HashMap::new();
 
-                m.insert("mistral".to_string(), ProviderConfig {
-                    name: "Mistral".to_string(),
-                    endpoint: "https://api.mistral.ai/v1/chat/completions".to_string(),
-                    env_key: "MISTRAL_API_KEY".to_string(),
-                    api_key: None,
-                    default_model: Some("zai-glm-5-2".to_string()),
-                    models: vec![
-                        ModelConfig {
+                m.insert(
+                    "mistral".to_string(),
+                    ProviderConfig {
+                        name: "Mistral".to_string(),
+                        endpoint: "https://api.mistral.ai/v1/chat/completions".to_string(),
+                        env_key: "MISTRAL_API_KEY".to_string(),
+                        api_key: None,
+                        default_model: Some("zai-glm-5-2".to_string()),
+                        models: vec![ModelConfig {
                             id: "zai-glm-5-2".to_string(),
                             name: Some("Z.ai GLM 5.2".to_string()),
                             thinking: false,
                             thinking_levels: vec![],
-                        },
-                    ],
-                });
+                        }],
+                    },
+                );
 
-                m.insert("opencode-zen".to_string(), ProviderConfig {
-                    name: "OpenCode Zen".to_string(),
-                    endpoint: "https://opencode.ai/zen/v1/chat/completions".to_string(),
-                    env_key: "OPENCODE_API_KEY".to_string(),
-                    api_key: None,
-                    default_model: Some("glm-5.2".to_string()),
-                    models: vec![
-                        ModelConfig {
-                            id: "glm-5.2".to_string(),
-                            name: Some("GLM 5.2".to_string()),
-                            thinking: false,
-                            thinking_levels: vec![],
-                        },
-                        ModelConfig {
-                            id: "glm-5.1".to_string(),
-                            name: Some("GLM 5.1".to_string()),
-                            thinking: false,
-                            thinking_levels: vec![],
-                        },
-                    ],
-                });
+                m.insert(
+                    "opencode-zen".to_string(),
+                    ProviderConfig {
+                        name: "OpenCode Zen".to_string(),
+                        endpoint: "https://opencode.ai/zen/v1/chat/completions".to_string(),
+                        env_key: "OPENCODE_API_KEY".to_string(),
+                        api_key: None,
+                        default_model: Some("glm-5.2".to_string()),
+                        models: vec![
+                            ModelConfig {
+                                id: "glm-5.2".to_string(),
+                                name: Some("GLM 5.2".to_string()),
+                                thinking: false,
+                                thinking_levels: vec![],
+                            },
+                            ModelConfig {
+                                id: "glm-5.1".to_string(),
+                                name: Some("GLM 5.1".to_string()),
+                                thinking: false,
+                                thinking_levels: vec![],
+                            },
+                        ],
+                    },
+                );
 
-                m.insert("opencode-go".to_string(), ProviderConfig {
-                    name: "OpenCode Go".to_string(),
-                    endpoint: "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
-                    env_key: "OPENCODE_API_KEY".to_string(),
-                    api_key: None,
-                    default_model: Some("glm-5.2".to_string()),
-                    models: vec![
-                        ModelConfig {
-                            id: "glm-5.2".to_string(),
-                            name: Some("GLM 5.2".to_string()),
-                            thinking: false,
-                            thinking_levels: vec![],
-                        },
-                        ModelConfig {
-                            id: "glm-5.3".to_string(),
-                            name: Some("GLM 5.3".to_string()),
-                            thinking: false,
-                            thinking_levels: vec![],
-                        },
-                    ],
-                });
+                m.insert(
+                    "opencode-go".to_string(),
+                    ProviderConfig {
+                        name: "OpenCode Go".to_string(),
+                        endpoint: "https://opencode.ai/zen/go/v1/chat/completions".to_string(),
+                        env_key: "OPENCODE_API_KEY".to_string(),
+                        api_key: None,
+                        default_model: Some("glm-5.2".to_string()),
+                        models: vec![
+                            ModelConfig {
+                                id: "glm-5.2".to_string(),
+                                name: Some("GLM 5.2".to_string()),
+                                thinking: false,
+                                thinking_levels: vec![],
+                            },
+                            ModelConfig {
+                                id: "glm-5.3".to_string(),
+                                name: Some("GLM 5.3".to_string()),
+                                thinking: false,
+                                thinking_levels: vec![],
+                            },
+                        ],
+                    },
+                );
 
-                m.insert("groq".to_string(), ProviderConfig {
-                    name: "Groq".to_string(),
-                    endpoint: "https://api.groq.com/openai/v1/chat/completions".to_string(),
-                    env_key: "GROQ_API_KEY".to_string(),
-                    api_key: None,
-                    default_model: Some("openai/gpt-oss-120b".to_string()),
-                    models: vec![
-                        ModelConfig {
+                m.insert(
+                    "groq".to_string(),
+                    ProviderConfig {
+                        name: "Groq".to_string(),
+                        endpoint: "https://api.groq.com/openai/v1/chat/completions".to_string(),
+                        env_key: "GROQ_API_KEY".to_string(),
+                        api_key: None,
+                        default_model: Some("openai/gpt-oss-120b".to_string()),
+                        models: vec![ModelConfig {
                             id: "openai/gpt-oss-120b".to_string(),
                             name: Some("GPT-OSS 120B".to_string()),
                             thinking: false,
                             thinking_levels: vec![],
-                        },
-                    ],
-                });
+                        }],
+                    },
+                );
 
                 m
             },
@@ -194,27 +202,38 @@ impl AppConfig {
 
     /// Resolve the API key for a provider: config api_key > env var.
     pub fn resolve_api_key(&self, provider_name: &str) -> Result<String> {
-        let provider = self.providers.get(provider_name)
+        let provider = self
+            .providers
+            .get(provider_name)
             .ok_or_else(|| anyhow!("unknown provider: {}", provider_name))?;
 
         if let Some(key) = &provider.api_key {
             return Ok(key.clone());
         }
 
-        std::env::var(&provider.env_key)
-            .map_err(|_| anyhow!("env var {} not set for provider '{}'", provider.env_key, provider_name))
+        std::env::var(&provider.env_key).map_err(|_| {
+            anyhow!(
+                "env var {} not set for provider '{}'",
+                provider.env_key,
+                provider_name
+            )
+        })
     }
 
     /// Get the endpoint URL for a provider.
     pub fn endpoint(&self, provider_name: &str) -> Result<&str> {
-        let provider = self.providers.get(provider_name)
+        let provider = self
+            .providers
+            .get(provider_name)
             .ok_or_else(|| anyhow!("unknown provider: {}", provider_name))?;
         Ok(&provider.endpoint)
     }
 
     /// Get the default model ID for a provider.
     pub fn default_model_id(&self, provider_name: &str) -> Result<&str> {
-        let provider = self.providers.get(provider_name)
+        let provider = self
+            .providers
+            .get(provider_name)
             .ok_or_else(|| anyhow!("unknown provider: {}", provider_name))?;
 
         if let Some(model) = &provider.default_model {
@@ -223,16 +242,29 @@ impl AppConfig {
         if let Some(first) = provider.models.first() {
             return Ok(&first.id);
         }
-        Err(anyhow!("no models configured for provider '{}'", provider_name))
+        Err(anyhow!(
+            "no models configured for provider '{}'",
+            provider_name
+        ))
     }
 
     /// Find a model config by ID within a provider.
     pub fn find_model(&self, provider_name: &str, model_id: &str) -> Result<&ModelConfig> {
-        let provider = self.providers.get(provider_name)
+        let provider = self
+            .providers
+            .get(provider_name)
             .ok_or_else(|| anyhow!("unknown provider: {}", provider_name))?;
-        provider.models.iter()
+        provider
+            .models
+            .iter()
             .find(|m| m.id == model_id)
-            .ok_or_else(|| anyhow!("model '{}' not found in provider '{}'", model_id, provider_name))
+            .ok_or_else(|| {
+                anyhow!(
+                    "model '{}' not found in provider '{}'",
+                    model_id,
+                    provider_name
+                )
+            })
     }
 
     /// List all provider names.

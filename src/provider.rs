@@ -1,7 +1,7 @@
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use anyhow::Result;
 
 /// Core trait that all LLM providers must implement
 #[async_trait]
@@ -12,14 +12,14 @@ pub trait Provider: Send + Sync {
         messages: Vec<Message>,
         tools: Option<Vec<Tool>>,
         max_tokens: Option<u32>,
-        system_prompt: Option<String>
+        system_prompt: Option<String>,
     ) -> Result<CompletionResponse>;
 }
 
 /// A message in the conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,      // "user" or "assistant"
+    pub role: String, // "user" or "assistant"
     pub content: String,
 }
 
@@ -49,9 +49,9 @@ pub struct ToolCall {
 /// Why the completion stopped
 #[derive(Debug, Clone, PartialEq)]
 pub enum StopReason {
-    EndTurn,        // Natural completion
-    ToolUse,        // Wants to call tools
-    MaxTokens,      // Hit token limit
-    ContentFilter,  // Filtered by provider
-    Error,          // Something went wrong
+    EndTurn,       // Natural completion
+    ToolUse,       // Wants to call tools
+    MaxTokens,     // Hit token limit
+    ContentFilter, // Filtered by provider
+    Error,         // Something went wrong
 }

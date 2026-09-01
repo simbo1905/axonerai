@@ -1,8 +1,8 @@
 use crate::provider::{CompletionResponse, Message, Provider, StopReason, Tool, ToolCall};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct MistralProvider {
     api_key: String,
@@ -98,8 +98,8 @@ impl Provider for MistralProvider {
             calls
                 .iter()
                 .map(|tc| {
-                    let input: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(json!({}));
+                    let input: Value =
+                        serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     ToolCall {
                         id: tc.id.clone(),
                         name: tc.function.name.clone(),

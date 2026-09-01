@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use axonerai::wire::ServerMsg;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const VARIANTS: [&str; 4] = ["ready", "pong", "assistant", "error"];
 

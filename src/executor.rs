@@ -1,6 +1,6 @@
 use crate::provider::ToolCall;
 use crate::tool::ToolRegistry;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 /// Executes tool calls and returns results
 pub struct ToolExecutor<'a> {
@@ -15,7 +15,7 @@ impl<'a> ToolExecutor<'a> {
     /// Execute a single tool call
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult> {
         println!("  🔧 Executing tool: {}", tool_call.name);
-        
+
         let tool = self
             .registry
             .get(&tool_call.name)
@@ -31,7 +31,7 @@ impl<'a> ToolExecutor<'a> {
     }
 
     /// Execute multiple tool calls
-    
+
     pub async fn execute_all(&self, tool_calls: &[ToolCall]) -> Result<Vec<ToolResult>> {
         let mut results = Vec::new();
         for call in tool_calls {

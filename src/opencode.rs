@@ -1,8 +1,8 @@
 use crate::provider::{CompletionResponse, Message, Provider, StopReason, Tool, ToolCall};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Generic OpenAI-compatible provider used for OpenCode Zen and OpenCode Go.
 /// The endpoint, API key, and model are all configurable so the same code
@@ -47,10 +47,13 @@ impl Provider for OpenCodeProvider {
         if let Some(sys_prompt) = system_prompt {
             // Prepend system message
             if let Some(arr) = body["messages"].as_array_mut() {
-                arr.insert(0, json!({
-                    "role": "system",
-                    "content": sys_prompt
-                }));
+                arr.insert(
+                    0,
+                    json!({
+                        "role": "system",
+                        "content": sys_prompt
+                    }),
+                );
             }
         }
 
@@ -104,8 +107,8 @@ impl Provider for OpenCodeProvider {
             calls
                 .iter()
                 .map(|tc| {
-                    let input: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(json!({}));
+                    let input: Value =
+                        serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     ToolCall {
                         id: tc.id.clone(),
                         name: tc.function.name.clone(),

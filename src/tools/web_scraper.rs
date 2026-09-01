@@ -1,15 +1,14 @@
 use crate::tool::Tool;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use reqwest;
 use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::time::Instant;
 
 #[cfg(feature = "web")]
 use tracing::debug;
-
 
 pub struct WebScrape;
 
@@ -20,11 +19,13 @@ struct WebScrapeInput {
 }
 #[async_trait]
 impl Tool for WebScrape {
+    fn name(&self) -> String {
+        "WebScrape".to_string()
+    }
 
-
-    fn name(&self) -> String{ "WebScrape".to_string()}
-
-    fn description(&self) -> String{ "This tool gives the actual content of the page and returns text for which the user has asked".to_string()}
+    fn description(&self) -> String {
+        "This tool gives the actual content of the page and returns text for which the user has asked".to_string()
+    }
 
     fn input_schema(&self) -> Value {
         json!({
@@ -57,14 +58,13 @@ impl Tool for WebScrape {
         let links = input.links;
         let mut search_blob = "Title, WebpageContent".to_string();
         let web_scr_start = Instant::now();
-        for (title, link ) in titles.iter().zip(links.iter()) {
+        for (title, link) in titles.iter().zip(links.iter()) {
             let content = fetch_content(link.to_string()).await?;
-            println!("{}",content);
+            println!("{}", content);
             search_blob.push_str(&format!("\n{}: {}", title, content));
         }
         println!("Time taken for web scraping: {:?}", web_scr_start.elapsed());
         Ok(search_blob)
-
     }
 }
 async fn fetch_html(url: &str) -> Result<String> {

@@ -38,18 +38,27 @@ impl Tool for WriteFile {
     }
 
     async fn execute(&self, input: Value) -> Result<String> {
-        let path_str = input["path"].as_str().ok_or_else(|| anyhow::anyhow!("Missing path"))?;
-        let content = input["content"].as_str().ok_or_else(|| anyhow::anyhow!("Missing content"))?;
+        let path_str = input["path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing path"))?;
+        let content = input["content"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing content"))?;
 
         #[cfg(feature = "web")]
-        debug!("WriteFile: path={}, content_len={}, cwd={:?}", path_str, content.len(), std::env::current_dir()?);
+        debug!(
+            "WriteFile: path={}, content_len={}, cwd={:?}",
+            path_str,
+            content.len(),
+            std::env::current_dir()?
+        );
 
         if path_str.contains("..") || path_str.starts_with('/') {
-             return Ok("Error: For security, absolute paths and parent directory traversal (..) are not allowed.".to_string());
+            return Ok("Error: For security, absolute paths and parent directory traversal (..) are not allowed.".to_string());
         }
 
         let path = Path::new(path_str);
-        
+
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;
@@ -59,6 +68,10 @@ impl Tool for WriteFile {
         fs::write(path, content)?;
         #[cfg(feature = "web")]
         info!("Wrote {} bytes to '{}'", content.len(), path_str);
-        Ok(format!("Successfully wrote {} bytes to '{}'", content.len(), path_str))
+        Ok(format!(
+            "Successfully wrote {} bytes to '{}'",
+            content.len(),
+            path_str
+        ))
     }
 }

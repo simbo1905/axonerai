@@ -1,8 +1,8 @@
 use crate::provider::{CompletionResponse, Message, Provider, StopReason, Tool, ToolCall};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct GroqProvider {
     api_key: String,
@@ -32,10 +32,9 @@ impl Provider for GroqProvider {
         messages: Vec<Message>,
         tools: Option<Vec<Tool>>,
         max_tokens: Option<u32>,
-        system_prompt: Option<String>
+        system_prompt: Option<String>,
     ) -> Result<CompletionResponse> {
-
-        let mut complete_message:Vec<Value> = Vec::new();
+        let mut complete_message: Vec<Value> = Vec::new();
 
         if let Some(sys_prompt) = system_prompt {
             complete_message.push(json!({
@@ -73,7 +72,6 @@ impl Provider for GroqProvider {
             body["tools"] = json!(groq_tools);
         }
 
-
         let response = self
             .client
             .post("https://api.groq.com/openai/v1/chat/completions")
@@ -83,7 +81,6 @@ impl Provider for GroqProvider {
             .send()
             .await?;
 
-        
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await?;
@@ -91,9 +88,8 @@ impl Provider for GroqProvider {
         }
 
         let api_response: GroqResponse = response.json().await?;
-        
-        // println!("DEBUG: Groq response: {}", serde_json::to_string_pretty(&api_response)?);
 
+        // println!("DEBUG: Groq response: {}", serde_json::to_string_pretty(&api_response)?);
 
         let choice = api_response
             .choices
@@ -106,8 +102,8 @@ impl Provider for GroqProvider {
             calls
                 .iter()
                 .map(|tc| {
-                    let input: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(json!({}));
+                    let input: Value =
+                        serde_json::from_str(&tc.function.arguments).unwrap_or(json!({}));
                     ToolCall {
                         id: tc.id.clone(),
                         name: tc.function.name.clone(),

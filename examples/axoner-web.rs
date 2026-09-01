@@ -4,18 +4,20 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::Context;
-use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::Router;
 use axum::extract::State;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
 use tracing::info;
+use tracing_subscriber::EnvFilter;
 
-use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry};
 use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
 use axonerai::wire::{ClientMsg, ServerMsg};
+use axonerai::{
+    Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "agt", version, about = "AxonerAI tooling")]
@@ -30,27 +32,27 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-     Serve {
-         /// Hostname to bind to (default: 127.0.0.1)
-         #[arg(long)]
-         host: Option<String>,
+    Serve {
+        /// Hostname to bind to (default: 127.0.0.1)
+        #[arg(long)]
+        host: Option<String>,
 
-         /// Port to bind to (default: 0, auto-select a free high port)
-         #[arg(long)]
-         port: Option<u16>,
+        /// Port to bind to (default: 0, auto-select a free high port)
+        #[arg(long)]
+        port: Option<u16>,
 
-         /// Directory to serve `index.html` + `assets/` from (default: ./web)
-         #[arg(long)]
-         web_root: Option<PathBuf>,
+        /// Directory to serve `index.html` + `assets/` from (default: ./web)
+        #[arg(long)]
+        web_root: Option<PathBuf>,
 
-         /// Provider to use (overrides config default: mistral, opencode-zen, opencode-go, groq)
-         #[arg(long)]
-         provider: Option<String>,
+        /// Provider to use (overrides config default: mistral, opencode-zen, opencode-go, groq)
+        #[arg(long)]
+        provider: Option<String>,
 
-         /// Model ID to use (overrides provider default)
-         #[arg(long)]
-         model: Option<String>,
-     },
+        /// Model ID to use (overrides provider default)
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 #[derive(Clone)]
@@ -80,7 +82,7 @@ fn load_env_file() {
                 if let Some((key, value)) = line.split_once('=') {
                     let key = key.trim();
                     let value = value.trim();
-                    
+
                     // Only set if not already set in environment
                     if std::env::var(key).is_err() {
                         // std::env::set_var is unsafe but we're using it safely here
@@ -99,18 +101,15 @@ async fn main() -> anyhow::Result<()> {
     load_env_file();
 
     let cli = Cli::parse();
-    
+
     let log_level = match cli.verbose {
         0 => "warn",
         1 => "axonerai=debug,axoner_web=debug,warn",
         _ => "axonerai=trace,axoner_web=trace,debug",
     };
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_level));
-    
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
         Commands::Serve {
@@ -136,24 +135,33 @@ async fn serve(
 
     let config = AppConfig::load()?;
 
-    let provider_name = provider_override
-        .unwrap_or_else(|| std::env::var("AXONERAI_PROVIDER").unwrap_or_else(|_| config.default_provider.clone()));
+    let provider_name = provider_override.unwrap_or_else(|| {
+        std::env::var("AXONERAI_PROVIDER").unwrap_or_else(|_| config.default_provider.clone())
+    });
 
     let model_id = model_override
         .or_else(|| std::env::var("AXONERAI_MODEL").ok())
-        .unwrap_or_else(|| config.default_model_id(&provider_name).unwrap_or_default().to_string());
+        .unwrap_or_else(|| {
+            config
+                .default_model_id(&provider_name)
+                .unwrap_or_default()
+                .to_string()
+        });
 
     let agent = build_agent_from_config(&config, &provider_name, &model_id).ok();
 
     let cli = Cli::parse();
-    let state = AppState { web_root, agent, verbose: cli.verbose };
+    let state = AppState {
+        web_root,
+        agent,
+        verbose: cli.verbose,
+    };
 
     let assets_dir = state.web_root.join("assets");
     let assets_service = tower_http::services::ServeDir::new(assets_dir);
     let src_service = tower_http::services::ServeDir::new(state.web_root.join("src"));
     let test_service = tower_http::services::ServeDir::new(state.web_root.join("test"));
-    let generated_service =
-        tower_http::services::ServeDir::new(state.web_root.join("generated"));
+    let generated_service = tower_http::services::ServeDir::new(state.web_root.join("generated"));
 
     let app = Router::new()
         .route("/", get(index))
@@ -184,7 +192,9 @@ async fn serve(
     println!("  WebSocket:  ws://{actual_addr}/ws");
     println!("  Web root:   {}", state.web_root.display());
     if state.agent.is_none() {
-        println!("  Note: no provider configured (set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY)");
+        println!(
+            "  Note: no provider configured (set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY)"
+        );
     }
     println!();
     println!("  Provider:   {}", provider_name);
@@ -218,7 +228,9 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                 version: env!("CARGO_PKG_VERSION"),
                 websocket_path: "/ws",
             })
-            .unwrap_or_else(|_| r#"{"_type":"ready","version":"unknown","websocket_path":"/ws"}"#.to_string()),
+            .unwrap_or_else(|_| {
+                r#"{"_type":"ready","version":"unknown","websocket_path":"/ws"}"#.to_string()
+            }),
         ))
         .await;
 
@@ -237,7 +249,9 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             id: None,
                             message: &format!("invalid message: {e}"),
                         })
-                        .unwrap_or_else(|_| r#"{"_type":"error","message":"invalid message"}"#.to_string()),
+                        .unwrap_or_else(|_| {
+                            r#"{"_type":"error","message":"invalid message"}"#.to_string()
+                        }),
                     ))
                     .await;
                 continue;
@@ -248,10 +262,8 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
             ClientMsg::Ping { id } => {
                 let _ = socket
                     .send(WsMessage::Text(
-                        serde_json::to_string(&ServerMsg::Pong {
-                            id: id.as_deref(),
-                        })
-                        .unwrap_or_else(|_| r#"{"_type":"pong"}"#.to_string()),
+                        serde_json::to_string(&ServerMsg::Pong { id: id.as_deref() })
+                            .unwrap_or_else(|_| r#"{"_type":"pong"}"#.to_string()),
                     ))
                     .await;
             }
@@ -277,7 +289,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                     Ok(reply) => {
                         let timestamp = chrono::DateTime::<chrono::Utc>::from(SystemTime::now())
                             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                        
+
                         match state.verbose {
                             0 => info!("[{}] Response: {} bytes", timestamp, reply.len()),
                             1 => {
@@ -286,9 +298,16 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                 } else {
                                     reply.clone()
                                 };
-                                info!("[{}] Response: {} bytes - {}", timestamp, reply.len(), preview);
+                                info!(
+                                    "[{}] Response: {} bytes - {}",
+                                    timestamp,
+                                    reply.len(),
+                                    preview
+                                );
                             }
-                            _ => info!("[{}] Response: {} bytes\n{}", timestamp, reply.len(), reply),
+                            _ => {
+                                info!("[{}] Response: {} bytes\n{}", timestamp, reply.len(), reply)
+                            }
                         }
 
                         let _ = socket
@@ -298,7 +317,8 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     text: &reply,
                                 })
                                 .unwrap_or_else(|_| {
-                                    r#"{"_type":"assistant","text":"(serialization error)"}"#.to_string()
+                                    r#"{"_type":"assistant","text":"(serialization error)"}"#
+                                        .to_string()
                                 }),
                             ))
                             .await;
@@ -310,7 +330,9 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     id: id.as_deref(),
                                     message: &format!("agent error: {e}"),
                                 })
-                                .unwrap_or_else(|_| r#"{"_type":"error","message":"agent error"}"#.to_string()),
+                                .unwrap_or_else(|_| {
+                                    r#"{"_type":"error","message":"agent error"}"#.to_string()
+                                }),
                             ))
                             .await;
                     }
@@ -320,7 +342,11 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
     }
 }
 
-fn build_agent_from_config(config: &AppConfig, provider_name: &str, model_id: &str) -> anyhow::Result<Arc<Agent>> {
+fn build_agent_from_config(
+    config: &AppConfig,
+    provider_name: &str,
+    model_id: &str,
+) -> anyhow::Result<Arc<Agent>> {
     let api_key = config.resolve_api_key(provider_name)?;
     let endpoint = config.endpoint(provider_name)?;
 
@@ -374,5 +400,10 @@ fn build_agent_from_config(config: &AppConfig, provider_name: &str, model_id: &s
             .to_string(),
     );
 
-    Ok(Arc::new(Agent::new(provider, registry, system_prompt, None)))
+    Ok(Arc::new(Agent::new(
+        provider,
+        registry,
+        system_prompt,
+        None,
+    )))
 }

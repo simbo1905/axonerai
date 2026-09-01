@@ -1,41 +1,45 @@
 use crate::executor::{ToolExecutor, ToolResult};
+use crate::file_session_manager::FileSessionManager;
 use crate::provider::{Message, Provider, StopReason};
+use crate::session::Session;
 use crate::tool::ToolRegistry;
 use anyhow::Result;
-use crate::file_session_manager::FileSessionManager;
-use crate::session::Session;
 
 pub struct Agent {
     provider: Box<dyn Provider>,
     registry: ToolRegistry,
     max_iterations: usize,
     system_prompt: Option<String>,
-    file_session_manager: Option<FileSessionManager>
+    file_session_manager: Option<FileSessionManager>,
 }
 
 impl Agent {
-    pub fn new(provider: Box<dyn Provider>, registry: ToolRegistry, system_prompt: Option<String>, file_session_manager: Option<FileSessionManager>) -> Self {
+    pub fn new(
+        provider: Box<dyn Provider>,
+        registry: ToolRegistry,
+        system_prompt: Option<String>,
+        file_session_manager: Option<FileSessionManager>,
+    ) -> Self {
         Self {
             provider,
             registry,
             max_iterations: 10, // Prevent infinite loops
             system_prompt,
-            file_session_manager
+            file_session_manager,
         }
     }
 
     /// Run the agent with a user prompt
     pub async fn run(&self, user_prompt: &str) -> Result<String> {
-
         let mut session = if let Some(ref sm) = self.file_session_manager {
-            if sm.exists() { sm.load()? }
-            else { Session::new(sm.get_session().to_string()) }
-        }
-        else {
+            if sm.exists() {
+                sm.load()?
+            } else {
+                Session::new(sm.get_session().to_string())
+            }
+        } else {
             Session::new("stateless".to_string())
         };
-
-
 
         println!();
 
@@ -48,10 +52,14 @@ impl Agent {
         let tools = self.registry.get_all_for_llm();
 
         for _iteration in 1..=self.max_iterations {
-
             let response = self
                 .provider
-                .complete(session.get_messages().clone(), Some(tools.clone()), None, self.system_prompt.clone())
+                .complete(
+                    session.get_messages().clone(),
+                    Some(tools.clone()),
+                    None,
+                    self.system_prompt.clone(),
+                )
                 .await?;
 
             match response.stop_reason {
@@ -108,7 +116,10 @@ impl Agent {
                 }
 
                 _ => {
-                    return Ok(format!("Agent stopped with reason: {:?}", response.stop_reason));
+                    return Ok(format!(
+                        "Agent stopped with reason: {:?}",
+                        response.stop_reason
+                    ));
                 }
             }
         }
