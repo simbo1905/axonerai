@@ -135,7 +135,11 @@ cargo run --example axoner --release
 ```
 
 ### Web UI Demo (`axoner-web`)
-An interactive web UI with WebSocket support for real-time agent communication:
+An interactive web UI with WebSocket support for real-time agent communication.
+
+The web UI uses the VanillaJS approach: a plain ES-module JavaScript client (`web/assets/client.mjs`)
+served as static files — no React, no Babel, no bundler, no build step. Type checking is done with
+`tsc --noEmit` via JSDoc annotations.
 
 ```bash
 # Default (warn level logging)
