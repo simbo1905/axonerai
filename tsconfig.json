@@ -12,7 +12,9 @@
       "/generated/validators.mjs": ["./web/types/generated-validators.d.ts"],
       "*/generated/validators.mjs": ["./web/types/generated-validators.d.ts"],
       "/src/wire.mjs": ["./web/src/wire.mjs"],
-      "*/src/wire.mjs": ["./web/src/wire.mjs"]
+      "*/src/wire.mjs": ["./web/src/wire.mjs"],
+      "/src/components/agt-app.js": ["./web/src/components/agt-app.js"],
+      "*/src/components/agt-app.js": ["./web/src/components/agt-app.js"]
     }
   },
   "include": [

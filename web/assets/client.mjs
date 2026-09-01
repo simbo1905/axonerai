@@ -1,7 +1,9 @@
 // Minimal ESM2020 websocket client for agt serve.
 // Exposes:
-//   - window.AgtClient.connect({ onOpen, onClose, onError })
-//   - window.AgtClient.sendPrompt(text) -> Promise<string>
+//   - window.AgtClient.connect({ onOpen, onClose, onError, onEvent })
+//   - window.AgtClient.sendPrompt(text, id?) -> Promise<string>
+
+import { parseWireEventText } from "/src/wire.mjs";
 
 const WS_PATH = "/ws";
 
@@ -16,6 +18,7 @@ function randomID() {
 
 let socket = null;
 let pending = new Map(); // id -> { resolve, reject }
+let onEventCb = null; // optional listener receiving validated wire events
 
 function cleanupPending(err) {
   for (const [, p] of pending) {
@@ -24,11 +27,12 @@ function cleanupPending(err) {
   pending.clear();
 }
 
-async function connect({ onOpen, onClose, onError } = {}) {
+async function connect({ onOpen, onClose, onError, onEvent } = {}) {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return { dispose };
   }
 
+  onEventCb = onEvent || null;
   socket = new WebSocket(wsUrl());
 
   socket.onopen = () => onOpen && onOpen();
@@ -41,32 +45,43 @@ async function connect({ onOpen, onClose, onError } = {}) {
   };
 
   socket.onmessage = (ev) => {
+    // Validate + deep-freeze every incoming frame before any handling.
+    let msg;
     try {
-      const msg = JSON.parse(ev.data);
-      if (msg._type === "assistant") {
-        const id = msg.id || null;
-        if (id && pending.has(id)) {
-          pending.get(id).resolve(msg.text || "");
-          pending.delete(id);
-        }
-        return;
-      }
-      if (msg._type === "error") {
-        const id = msg.id || null;
-        const err = new Error(msg.message || "error");
-        if (id && pending.has(id)) {
-          pending.get(id).reject(err);
-          pending.delete(id);
-        } else {
-          // Nothing pending; surface on console.
-          console.error(err);
-        }
-        return;
-      }
-      // ready/pong/etc ignored by UI
+      msg = parseWireEventText(ev.data);
     } catch (e) {
-      console.error("bad ws message", e);
+      console.warn("agt: skipping invalid/unhandled frame", e, ev.data);
+      return;
     }
+    // Hand the frozen event to the UI first, then do client-internal handling.
+    if (onEventCb) {
+      try {
+        onEventCb(msg);
+      } catch (e) {
+        console.warn("agt: onEvent listener failed", e);
+      }
+    }
+    if (msg._type === "assistant") {
+      const id = msg.id || null;
+      if (id && pending.has(id)) {
+        pending.get(id).resolve(msg.text || "");
+        pending.delete(id);
+      }
+      return;
+    }
+    if (msg._type === "error") {
+      const id = msg.id || null;
+      const err = new Error(msg.message || "error");
+      if (id && pending.has(id)) {
+        pending.get(id).reject(err);
+        pending.delete(id);
+      } else {
+        // Nothing pending; surface on console.
+        console.error(err);
+      }
+      return;
+    }
+    // ready/pong/etc: already dispatched to the UI listener above.
   };
 
   // Wait briefly for connection establishment.
@@ -93,15 +108,15 @@ function dispose() {
   socket = null;
 }
 
-async function sendPrompt(text) {
+async function sendPrompt(text, id) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     throw new Error("not connected");
   }
-  const id = randomID();
-  const payload = { _type: "prompt", id, text };
+  const wireId = typeof id === "string" && id.length > 0 ? id : randomID();
+  const payload = { _type: "prompt", id: wireId, text };
 
   const p = new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    pending.set(wireId, { resolve, reject });
   });
 
   socket.send(JSON.stringify(payload));

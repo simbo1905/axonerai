@@ -150,12 +150,19 @@ async fn serve(
 
     let assets_dir = state.web_root.join("assets");
     let assets_service = tower_http::services::ServeDir::new(assets_dir);
+    let src_service = tower_http::services::ServeDir::new(state.web_root.join("src"));
+    let test_service = tower_http::services::ServeDir::new(state.web_root.join("test"));
+    let generated_service =
+        tower_http::services::ServeDir::new(state.web_root.join("generated"));
 
     let app = Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
         .route("/ws", get(ws_upgrade))
         .nest_service("/assets", assets_service)
+        .nest_service("/src", src_service)
+        .nest_service("/test", test_service)
+        .nest_service("/generated", generated_service)
         .fallback(get(index))
         .with_state(state.clone());
 

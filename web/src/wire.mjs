@@ -48,6 +48,25 @@ import {
  */
 
 /**
+ * A client `prompt` record kept in UI state alongside server events.
+ * Mirrors the `_type: "prompt"` frame the client sends on the wire; it is
+ * created (and deep-frozen) client-side so the chat log can render the
+ * user's own message before the reply arrives.
+ *
+ * @typedef {object} PromptEvent
+ * @property {"prompt"} _type
+ * @property {string} id
+ * @property {string} text
+ */
+
+/**
+ * Any frozen value object that may appear in UI chat state: a server
+ * `WireEvent` or a client-side `PromptEvent` record.
+ *
+ * @typedef {WireEvent | PromptEvent} ChatEvent
+ */
+
+/**
  * Recursively freeze a value (objects and arrays, cycle-safe).
  *
  * @template T
