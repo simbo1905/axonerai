@@ -16,9 +16,10 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use axonerai::agent::ToolTrace;
 use axonerai::rollout::{self, Rollout, SessionInfo};
 use axonerai::tools::{Calculator, WebFetch, WebSearch, WriteFile};
-use axonerai::wire::{ClientMsg, ServerMsg};
+use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
 use axonerai::{
     Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
 };
@@ -179,8 +180,9 @@ async fn main() -> anyhow::Result<()> {
 /// `--session <uuid>` opens that rollout (error if missing); `--continue`
 /// opens the newest rollout by index (error if none); otherwise a fresh
 /// session (uuid v7, default title = rightmost cwd component) is created and
-/// a provisional `session_meta` event (serde JSON; JTD formalisation is a
-/// later item) is written as its first line.
+/// a typed `ServerMsg::SessionMeta` event is written as its first line (the
+/// on-disk shape is identical to item25's provisional JSON line so existing
+/// rollouts stay readable).
 fn resolve_session(
     sessions_dir: &std::path::Path,
     continue_: bool,
@@ -211,12 +213,20 @@ fn resolve_session(
                 .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_else(|| "session".to_string());
             let rollout = Rollout::create(sessions_dir, &id)?;
-            rollout.append_event(&serde_json::json!({
-                "_type": "session_meta",
-                "session_id": id.clone(),
-                "title": title,
-                "created_at": now_ms(),
-            }))?;
+            let meta_value = serde_json::to_value(&ServerMsg::SessionMeta {
+                session_id: id.as_str(),
+                title: title.as_str(),
+                created_at: now_ms(),
+            })
+            .unwrap_or_else(|_| {
+                serde_json::json!({
+                    "_type": "session_meta",
+                    "session_id": id.clone(),
+                    "title": title.clone(),
+                    "created_at": now_ms(),
+                })
+            });
+            rollout.append_event(&meta_value)?;
             Ok((Arc::new(rollout), id))
         }
     }
@@ -416,7 +426,7 @@ fn egress_line(ts: u64, json: &str) -> anyhow::Result<String> {
 
     let mut abridged = false;
     if let serde_json::Value::Object(map) = &mut value {
-        for key in ["text", "args", "result"] {
+        for key in ["text", "args", "result", "args_json", "result_json"] {
             if let Some(serde_json::Value::String(s)) = map.get_mut(key) {
                 if s.chars().count() > EGRESS_ABRIDGE_CHARS {
                     *s = rollout::abridge(s, EGRESS_ABRIDGE_CHARS);
@@ -498,6 +508,12 @@ async fn ws_upgrade(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl
 
 async fn ws_session(state: AppState, mut socket: WebSocket) {
     info!("[{}] ws client connected", state.session_id);
+
+    // Outbound frames produced by spawned tasks (tool-trace forwarder, agent
+    // run) flow through this channel; the main select loop writes them to the
+    // socket while staying responsive to inbound client messages.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
     // Durable-first: append the ready frame to the rollout before sending it.
     let ready_value = serde_json::to_value(&ServerMsg::Ready {
         version: env!("CARGO_PKG_VERSION"),
@@ -509,100 +525,251 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
     let _ = state.rollout.append_event(&ready_value);
     let _ = socket.send(WsMessage::Text(ready_value.to_string())).await;
 
-    while let Some(Ok(msg)) = socket.recv().await {
-        let WsMessage::Text(text) = msg else {
-            continue;
-        };
+    // Broadcast session metadata so the browser knows the session title.
+    // Fresh sessions already carry a session_meta line (written at creation
+    // in resolve_session); reopenings get one appended here so the frame is
+    // durable too.
+    let meta_title = state
+        .rollout
+        .title()
+        .unwrap_or_else(|_| state.session_id.clone());
+    let meta_value = serde_json::to_value(&ServerMsg::SessionMeta {
+        session_id: &state.session_id,
+        title: &meta_title,
+        created_at: now_ms(),
+    })
+    .unwrap_or_else(|_| {
+        serde_json::json!({
+            "_type": "session_meta",
+            "session_id": state.session_id,
+            "title": meta_title,
+            "created_at": now_ms(),
+        })
+    });
+    let _ = state.rollout.append_event(&meta_value);
+    let _ = socket.send(WsMessage::Text(meta_value.to_string())).await;
 
-        let value: serde_json::Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                send_error(&state, &mut socket, None, &format!("invalid message: {e}")).await;
-                continue;
-            }
-        };
-
-        // Durable-first: record the client frame before acting on it.
-        if value.is_object() {
-            let _ = state.rollout.append_event(&value);
-        }
-
-        let client_msg: ClientMsg = match serde_json::from_value(value) {
-            Ok(m) => m,
-            Err(e) => {
-                send_error(&state, &mut socket, None, &format!("invalid message: {e}")).await;
-                continue;
-            }
-        };
-
-        match client_msg {
-            ClientMsg::Ping { id } => {
-                let pong_value = serde_json::to_value(&ServerMsg::Pong { id: id.as_deref() })
-                    .unwrap_or_else(|_| serde_json::json!({"_type":"pong"}));
-                let _ = state.rollout.append_event(&pong_value);
-                let _ = socket.send(WsMessage::Text(pong_value.to_string())).await;
-            }
-            ClientMsg::Prompt { id, text } => {
-                let Some(agent) = &state.agent else {
-                    send_error(
-                        &state,
-                        &mut socket,
-                        id.as_deref(),
-                        "No provider configured. Set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY.",
-                    )
-                    .await;
-                    continue;
-                };
-
-                let result = agent.run(text.trim()).await;
-                match result {
-                    Ok(reply) => {
-                        let timestamp = chrono::DateTime::<chrono::Utc>::from(SystemTime::now())
-                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-                        match state.verbose {
-                            0 => info!("[{}] Response: {} bytes", timestamp, reply.len()),
-                            1 => {
-                                let preview = if reply.len() > 77 {
-                                    format!("{}...", &reply[..77])
-                                } else {
-                                    reply.clone()
-                                };
-                                info!(
-                                    "[{}] Response: {} bytes - {}",
-                                    timestamp,
-                                    reply.len(),
-                                    preview
-                                );
-                            }
-                            _ => {
-                                info!("[{}] Response: {} bytes\n{}", timestamp, reply.len(), reply)
-                            }
-                        }
-
-                        let assistant_value = serde_json::to_value(&ServerMsg::Assistant {
-                            id: id.as_deref(),
-                            text: &reply,
-                        })
-                        .unwrap_or_else(|_| {
-                            serde_json::json!({"_type":"assistant","text":"(serialization error)"})
-                        });
-                        let _ = state.rollout.append_event(&assistant_value);
-                        let _ = socket
-                            .send(WsMessage::Text(assistant_value.to_string()))
+    loop {
+        tokio::select! {
+            out = out_rx.recv() => match out {
+                Some(text) => {
+                    let _ = socket.send(WsMessage::Text(text)).await;
+                }
+                None => break,
+            },
+            msg = socket.recv() => match msg {
+                Some(Ok(WsMessage::Text(text))) => {
+                    let value: serde_json::Value = match serde_json::from_str(&text) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            send_error(
+                                &state,
+                                &mut socket,
+                                None,
+                                &format!("invalid message: {e}"),
+                            )
                             .await;
+                            continue;
+                        }
+                    };
+
+                    // Durable-first: record the client frame before acting on it.
+                    if value.is_object() {
+                        let _ = state.rollout.append_event(&value);
                     }
-                    Err(e) => {
-                        send_error(
-                            &state,
-                            &mut socket,
-                            id.as_deref(),
-                            &format!("agent error: {e}"),
-                        )
-                        .await;
+
+                    let client_msg: ClientMsg = match serde_json::from_value(value) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            send_error(
+                                &state,
+                                &mut socket,
+                                None,
+                                &format!("invalid message: {e}"),
+                            )
+                            .await;
+                            continue;
+                        }
+                    };
+
+                    match client_msg {
+                        ClientMsg::Ping { id } => {
+                            let pong_value =
+                                serde_json::to_value(&ServerMsg::Pong { id: id.as_deref() })
+                                    .unwrap_or_else(|_| serde_json::json!({"_type":"pong"}));
+                            let _ = state.rollout.append_event(&pong_value);
+                            let _ =
+                                socket.send(WsMessage::Text(pong_value.to_string())).await;
+                        }
+                        ClientMsg::Rename { title } => {
+                            // Rollout-internal record — not broadcast to other
+                            // clients; the renaming client gets an ack.
+                            let record_value = serde_json::to_value(
+                                &RolloutRecord::SessionRename { title, ts: now_ms() },
+                            )
+                            .unwrap_or_else(|_| {
+                                serde_json::json!({"_type":"session_rename","ts":now_ms()})
+                            });
+                            let _ = state.rollout.append_event(&record_value);
+
+                            let ack_value = serde_json::to_value(&ServerMsg::Ack {
+                                for_type: "rename",
+                                ok: true,
+                                message: None,
+                            })
+                            .unwrap_or_else(|_| {
+                                serde_json::json!({"_type":"ack","for_type":"rename","ok":true,"message":null})
+                            });
+                            let _ = state.rollout.append_event(&ack_value);
+                            let _ = socket
+                                .send(WsMessage::Text(ack_value.to_string()))
+                                .await;
+                        }
+                        ClientMsg::Prompt { id, text } => {
+                            let Some(agent) = &state.agent else {
+                                send_error(
+                                    &state,
+                                    &mut socket,
+                                    id.as_deref(),
+                                    "No provider configured. Set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY.",
+                                )
+                                .await;
+                                continue;
+                            };
+
+                            // Per-prompt trace channel: each tool execution
+                            // streams a ToolTrace which is forwarded as an
+                            // abridged tool_call frame (durable-first) while
+                            // the rollout also keeps a full-fidelity record.
+                            let (trace_tx, mut trace_rx) =
+                                tokio::sync::mpsc::unbounded_channel::<ToolTrace>();
+                            let fwd_state = state.clone();
+                            let fwd_out = out_tx.clone();
+                            tokio::spawn(async move {
+                                while let Some(trace) = trace_rx.recv().await {
+                                    let args_pretty = rollout::abridge(
+                                        &trace.args_json,
+                                        EGRESS_ABRIDGE_CHARS,
+                                    );
+                                    let result_pretty = rollout::abridge(
+                                        &trace.result_json,
+                                        EGRESS_ABRIDGE_CHARS,
+                                    );
+                                    let value = serde_json::to_value(&ServerMsg::ToolCall {
+                                        id: None,
+                                        session_id: &fwd_state.session_id,
+                                        tool: &trace.tool,
+                                        args_pretty: &args_pretty,
+                                        result_pretty: &result_pretty,
+                                        bytes_up: trace.bytes_up,
+                                        bytes_down: trace.bytes_down,
+                                        duration_ms: trace.duration_ms,
+                                        ts: trace.ts,
+                                    })
+                                    .unwrap_or_else(|_| {
+                                        serde_json::json!({"_type":"tool_call","tool":trace.tool})
+                                    });
+                                    // Durable-first: append, then send.
+                                    let _ = fwd_state.rollout.append_event(&value);
+                                    let _ = fwd_out.send(value.to_string());
+
+                                    // Separate full-fidelity record — never
+                                    // abridged, so the rollout keeps the whole
+                                    // tool result.
+                                    let full_value =
+                                        serde_json::to_value(&RolloutRecord::ToolTrace {
+                                            tool: trace.tool,
+                                            args_json: trace.args_json,
+                                            result_json: trace.result_json,
+                                            bytes_up: trace.bytes_up,
+                                            bytes_down: trace.bytes_down,
+                                            duration_ms: trace.duration_ms,
+                                            ts: trace.ts,
+                                        })
+                                        .unwrap_or_else(|_| {
+                                            serde_json::json!({"_type":"tool_trace"})
+                                        });
+                                    let _ = fwd_state.rollout.append_event(&full_value);
+                                }
+                            });
+
+                            let run_agent = agent.clone();
+                            let run_state = state.clone();
+                            let run_out = out_tx.clone();
+                            let run_id = id.clone();
+                            tokio::spawn(async move {
+                                let result =
+                                    run_agent.run_with_traces(text.trim(), trace_tx).await;
+                                match result {
+                                    Ok(reply) => {
+                                        let timestamp = chrono::DateTime::<chrono::Utc>::from(
+                                            SystemTime::now(),
+                                        )
+                                        .to_rfc3339_opts(
+                                            chrono::SecondsFormat::Millis,
+                                            true,
+                                        );
+
+                                        match run_state.verbose {
+                                            0 => info!(
+                                                "[{}] Response: {} bytes",
+                                                timestamp,
+                                                reply.len()
+                                            ),
+                                            1 => {
+                                                let preview = if reply.len() > 77 {
+                                                    format!("{}...", &reply[..77])
+                                                } else {
+                                                    reply.clone()
+                                                };
+                                                info!(
+                                                    "[{}] Response: {} bytes - {}",
+                                                    timestamp,
+                                                    reply.len(),
+                                                    preview
+                                                );
+                                            }
+                                            _ => info!(
+                                                "[{}] Response: {} bytes\n{}",
+                                                timestamp,
+                                                reply.len(),
+                                                reply
+                                            ),
+                                        }
+
+                                        let assistant_value = serde_json::to_value(
+                                            &ServerMsg::Assistant {
+                                                id: run_id.as_deref(),
+                                                text: &reply,
+                                            },
+                                        )
+                                        .unwrap_or_else(|_| {
+                                            serde_json::json!({"_type":"assistant","text":"(serialization error)"})
+                                        });
+                                        let _ =
+                                            run_state.rollout.append_event(&assistant_value);
+                                        let _ = run_out.send(assistant_value.to_string());
+                                    }
+                                    Err(e) => {
+                                        let error_value = serde_json::to_value(&ServerMsg::Error {
+                                            id: run_id.as_deref(),
+                                            message: &format!("agent error: {e}"),
+                                        })
+                                        .unwrap_or_else(|_| {
+                                            serde_json::json!({"_type":"error","message":"agent error"})
+                                        });
+                                        let _ =
+                                            run_state.rollout.append_event(&error_value);
+                                        let _ = run_out.send(error_value.to_string()).ok();
+                                    }
+                                }
+                            });
+                        }
                     }
                 }
-            }
+                Some(Ok(_)) => {}
+                _ => break,
+            },
         }
     }
 }

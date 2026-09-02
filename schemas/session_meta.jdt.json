@@ -1,0 +1,17 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["session_meta"]
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "float64"
+    }
+  },
+  "additionalProperties": false
+}

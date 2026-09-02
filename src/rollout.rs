@@ -140,6 +140,34 @@ impl Rollout {
         }
         Ok(count)
     }
+
+    /// Streaming scan: the session title — the first `session_meta` line's
+    /// `title`, else the rollout's uuid (file stem).
+    pub fn title(&self) -> Result<String> {
+        let file = File::open(&self.path)
+            .with_context(|| format!("failed to open rollout {}", self.path.display()))?;
+        let fallback = self
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("session")
+            .to_string();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            let Some((_, json)) = split_line(&line) else {
+                continue;
+            };
+            let Ok(v) = serde_json::from_str::<Value>(json) else {
+                continue;
+            };
+            if v.get("_type").and_then(Value::as_str) == Some("session_meta") {
+                if let Some(t) = v.get("title").and_then(Value::as_str) {
+                    return Ok(t.to_string());
+                }
+            }
+        }
+        Ok(fallback)
+    }
 }
 
 /// Index every `*.jsonlts` rollout in `dir`, sorted by `updated` descending.

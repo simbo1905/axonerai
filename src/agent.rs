@@ -1,9 +1,33 @@
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::executor::{ToolExecutor, ToolResult};
 use crate::file_session_manager::FileSessionManager;
 use crate::provider::{Message, Provider, StopReason};
 use crate::session::Session;
 use crate::tool::ToolRegistry;
 use anyhow::Result;
+
+/// Full-fidelity trace of a single tool execution, emitted on the
+/// `run_with_traces` channel. The consumer is responsible for abridging
+/// before egress — these fields are always untruncated.
+pub struct ToolTrace {
+    pub tool: String,
+    pub args_json: String,
+    pub result_json: String,
+    pub bytes_up: usize,
+    pub bytes_down: usize,
+    pub duration_ms: u64,
+    pub ts: u64,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 pub struct Agent {
     provider: Box<dyn Provider>,
@@ -29,8 +53,19 @@ impl Agent {
         }
     }
 
-    /// Run the agent with a user prompt
+    /// Run the agent with a user prompt (no tool-trace reporting).
     pub async fn run(&self, user_prompt: &str) -> Result<String> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        self.run_with_traces(user_prompt, tx).await
+    }
+
+    /// Run the agent with a user prompt, streaming one [`ToolTrace`] per tool
+    /// execution on `tx`. Send failures (e.g. a dropped receiver) are ignored.
+    pub async fn run_with_traces(
+        &self,
+        user_prompt: &str,
+        tx: UnboundedSender<ToolTrace>,
+    ) -> Result<String> {
         let mut session = if let Some(ref sm) = self.file_session_manager {
             if sm.exists() {
                 sm.load()?
@@ -92,8 +127,29 @@ impl Agent {
                         return Ok("Agent wanted to use tools but didn't specify any".to_string());
                     }
 
-                    // Execute the tools
-                    let tool_results = executor.execute_all(&response.tool_calls).await?;
+                    // Execute the tools one call at a time, emitting a
+                    // full-fidelity trace per call (per-call timing required;
+                    // batch timing is not acceptable).
+                    let mut tool_results = Vec::with_capacity(response.tool_calls.len());
+                    for call in &response.tool_calls {
+                        let args_pretty =
+                            serde_json::to_string_pretty(&call.input).unwrap_or_default();
+                        let started = Instant::now();
+                        let result = executor.execute(call).await?;
+                        let duration_ms = started.elapsed().as_millis() as u64;
+                        let result_pretty =
+                            serde_json::to_string_pretty(&result.result).unwrap_or_default();
+                        let _ = tx.send(ToolTrace {
+                            tool: call.name.clone(),
+                            args_json: args_pretty.clone(),
+                            result_json: result_pretty.clone(),
+                            bytes_up: args_pretty.len(),
+                            bytes_down: result_pretty.len(),
+                            duration_ms,
+                            ts: now_ms(),
+                        });
+                        tool_results.push(result);
+                    }
 
                     // Add assistant's tool use to messages
                     session.add_message(Message {

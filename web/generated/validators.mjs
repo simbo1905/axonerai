@@ -1,4 +1,9 @@
+export { validate as validateAck } from "./ack.mjs";
 export { validate as validateAssistant } from "./assistant.mjs";
 export { validate as validateError } from "./error.mjs";
 export { validate as validatePong } from "./pong.mjs";
 export { validate as validateReady } from "./ready.mjs";
+export { validate as validateRename } from "./rename.mjs";
+export { validate as validateSession_meta } from "./session_meta.mjs";
+export { validate as validateSession_rename } from "./session_rename.mjs";
+export { validate as validateTool_call } from "./tool_call.mjs";

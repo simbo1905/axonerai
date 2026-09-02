@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["rename"]
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

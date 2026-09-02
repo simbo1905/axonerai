@@ -1,0 +1,14 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["session_rename"]
+    },
+    "title": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "float64"
+    }
+  },
+  "additionalProperties": false
+}

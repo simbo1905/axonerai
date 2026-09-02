@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["ack"]
+    },
+    "for_type": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "message": {
+      "type": "string",
+      "nullable": true
+    }
+  },
+  "additionalProperties": false
+}

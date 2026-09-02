@@ -1,0 +1,36 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["tool_call"]
+    },
+    "id": {
+      "type": "string",
+      "nullable": true
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "tool": {
+      "type": "string"
+    },
+    "args_pretty": {
+      "type": "string"
+    },
+    "result_pretty": {
+      "type": "string"
+    },
+    "bytes_up": {
+      "type": "uint32"
+    },
+    "bytes_down": {
+      "type": "uint32"
+    },
+    "duration_ms": {
+      "type": "uint32"
+    },
+    "ts": {
+      "type": "float64"
+    }
+  },
+  "additionalProperties": false
+}
