@@ -52,6 +52,14 @@ Working rules for agents operating in this repository.
   the browser only ever receives ≤1024-byte abridged payloads.
 - WS egress for history/catch-up is line-format `ts\0type\0text` — the `_type`
   segment precedes the JSON payload (payload always starts with `{`).
+- Do not write tests that cross a decoupling boundary. BroadcastChannel,
+  worker, and IndexedDB boundaries exist so that each side can be tested
+  alone. Test pure logic in node:test; test the DOM in a single page. Never
+  orchestrate two pages to simulate a race the event loop cannot produce.
+  Producers persist first and broadcast second; consumers subscribe first and
+  read second. When a worker persists on a producer's behalf, the worker
+  re-broadcasts after commit (`tx.oncomplete`, not `request.onsuccess`) and
+  consumers subscribe to that stream.
 
 ## Task delegation process
 

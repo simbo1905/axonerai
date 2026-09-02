@@ -92,11 +92,11 @@ test("every registered command parses without error (rename needs args)", () => 
 test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("").map((c) => c.name),
-    ["model", "built-ins", "verbose", "rename", "help"],
+    ["model", "built-ins", "verbose", "rename", "help", "console"],
   );
   assert.deepEqual(
     filterCommands("/").map((c) => c.name),
-    ["model", "built-ins", "verbose", "rename", "help"],
+    ["model", "built-ins", "verbose", "rename", "help", "console"],
   );
   assert.deepEqual(
     filterCommands("/b").map((c) => c.name),
@@ -106,6 +106,12 @@ test("prefix filtering matches command names", () => {
     filterCommands("mo").map((c) => c.name),
     ["model"],
   );
+  assert.deepEqual(filterCommands("con"), [
+    {
+      name: "console",
+      description: "open the devtools console popup",
+    },
+  ]);
   assert.deepEqual(filterCommands("zzz"), []);
 });
 
@@ -126,13 +132,34 @@ test("commands are lowercase; input case is not normalized for parsing", () => {
   }
 });
 
-test("registry has exactly the v1 commands with descriptions", () => {
+test("registry has exactly the v1+console commands with descriptions", () => {
   assert.deepEqual(
     COMMANDS.map((c) => c.name),
-    ["model", "built-ins", "verbose", "rename", "help"],
+    ["model", "built-ins", "verbose", "rename", "help", "console"],
   );
   for (const command of COMMANDS) {
     assert.equal(typeof command.description, "string");
     assert.ok(command.description.length > 0, "description must be non-empty");
   }
+});
+
+test("console command is registered and /help will list it", () => {
+  const consoleCommand = COMMANDS.find((c) => c.name === "console");
+  if (!consoleCommand) throw new Error("console command missing from the registry");
+  assert.equal(consoleCommand.description, "open the devtools console popup");
+  assert.equal(consoleCommand.argsRequired, undefined, "console takes no args");
+  assert.deepEqual(parseInput("/console"), {
+    kind: "command",
+    name: "console",
+    args: "",
+  });
+  // The /help runner joins the registry, so the console entry flows into the
+  // help output text exactly as the other commands do.
+  const helpText = COMMANDS.map(
+    (command) => `/${command.name} — ${command.description}`,
+  ).join("\n");
+  assert.ok(
+    helpText.includes("/console — open the devtools console popup"),
+    `/help must list /console, got ${JSON.stringify(helpText)}`,
+  );
 });

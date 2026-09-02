@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agt console</title>
+    <style>
+      body {
+        margin: 0;
+        background: #06080f;
+        color: #e5e7eb;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: #0a0f1c; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 6px; }
+      ::-webkit-scrollbar-thumb:hover { background: #475569; }
+      agt-console-app {
+        display: block;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <agt-console-app></agt-console-app>
+    <script type="module" src="/src/components/agt-console-app.js"></script>
+  </body>
+</html>

@@ -19,12 +19,18 @@
       "*/src/lineformat.mjs": ["./web/src/lineformat.mjs"],
       "/src/history.mjs": ["./web/src/history.mjs"],
       "*/src/history.mjs": ["./web/src/history.mjs"],
+      "/src/console-bus.mjs": ["./web/src/console-bus.mjs"],
+      "*/src/console-bus.mjs": ["./web/src/console-bus.mjs"],
       "/assets/pretty-json.js": ["./web/types/pretty-json-glue.d.ts"],
       "*/assets/pretty-json.js": ["./web/types/pretty-json-glue.d.ts"],
       "/assets/lineformat.js": ["./web/types/lineformat-glue.d.ts"],
       "*/assets/lineformat.js": ["./web/types/lineformat-glue.d.ts"],
       "/src/components/agt-app.js": ["./web/src/components/agt-app.js"],
-      "*/src/components/agt-app.js": ["./web/src/components/agt-app.js"]
+      "*/src/components/agt-app.js": ["./web/src/components/agt-app.js"],
+      "/src/components/agt-console-app.js": ["./web/src/components/agt-console-app.js"],
+      "*/src/components/agt-console-app.js": ["./web/src/components/agt-console-app.js"],
+      "/src/components/agt-console-line.js": ["./web/src/components/agt-console-line.js"],
+      "*/src/components/agt-console-line.js": ["./web/src/components/agt-console-line.js"]
     }
   },
   "include": [

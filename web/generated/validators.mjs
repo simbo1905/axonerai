@@ -1,5 +1,6 @@
 export { validate as validateAck } from "./ack.mjs";
 export { validate as validateAssistant } from "./assistant.mjs";
+export { validate as validateConsole_entry } from "./console_entry.mjs";
 export { validate as validateError } from "./error.mjs";
 export { validate as validatePong } from "./pong.mjs";
 export { validate as validateReady } from "./ready.mjs";

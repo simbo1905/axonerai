@@ -45,6 +45,12 @@ declare global {
       fail: number;
       details: Array<{ name: string; ok: boolean; error?: string }>;
     };
+    /** Headless console-screen DOM test results (console-screen.headless.mjs — single page, injected entries). */
+    __CONSOLE_TEST_RESULTS__?: {
+      pass: number;
+      fail: number;
+      details: Array<{ name: string; ok: boolean; error?: string }>;
+    };
     /** Stub client hooks installed by panel.headless.mjs. */
     __PANEL_STUB__?: {
       emit(frame: unknown): void;

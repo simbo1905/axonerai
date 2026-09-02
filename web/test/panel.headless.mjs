@@ -335,12 +335,12 @@ await test("panel boots from /api/state: footer path:branch, MCP tavily Connecte
   );
 });
 
-await test("typing / opens the menu with all 5 commands", async () => {
+await test("typing / opens the menu with all 6 commands", async () => {
   await type("/");
   const menu = menuEl();
   assert(menu.hidden === false, "menu should be open after typing /");
   const options = [...menu.querySelectorAll("[role=option]")];
-  assertEqual(options.length, 5, "expected 5 commands in the menu");
+  assertEqual(options.length, 6, "expected 6 commands in the menu");
   assertEqual(
     options.map((o) => o.textContent).join("|"),
     [
@@ -349,6 +349,7 @@ await test("typing / opens the menu with all 5 commands", async () => {
       "/verbosetoggle verbose output rendering",
       "/renamerename the session: /rename <title>",
       "/helplist the available commands",
+      "/consoleopen the devtools console popup",
     ].join("|"),
     "unexpected menu entries",
   );
@@ -374,7 +375,7 @@ await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input ke
     "agt-slash-opt-1",
     "ArrowDown should move to the second option",
   );
-  for (let i = 0; i < 4; i++) await pressKey("ArrowDown");
+  for (let i = 0; i < 5; i++) await pressKey("ArrowDown");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
     "agt-slash-opt-0",
@@ -383,7 +384,7 @@ await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input ke
   await pressKey("ArrowUp");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
-    "agt-slash-opt-4",
+    "agt-slash-opt-5",
     "ArrowUp should wrap to the last option",
   );
   await pressKey("Escape");
@@ -399,16 +400,19 @@ await test("menu closes when input no longer starts with /", async () => {
   assert(menuEl().hidden === true, "menu should close for non-slash input");
 });
 
-await test("Enter on /model runs it: Slash shows model: text with other trees collapsed", async () => {
+await test("Enter on /model runs it: Slash shows the invocation echo, results go to the console, other trees collapse", async () => {
   assert(isCollapsed("Context") === false, "Context expanded before command");
   assert(isCollapsed("MCP") === false, "MCP expanded before command");
   await type("/model");
   await pressKey("Enter");
-  await waitFor(
-    () => slashText().includes("model: zai-glm-5-2 (provider: mistral)"),
-    "slash model response",
-  );
+  await waitFor(() => slashText().includes("/model"), "slash invocation echo");
   assertEqual(ta().value, "", "input cleared after running the command");
+  // item32: the RESULT goes to the console bus (devtools popup); the Slash
+  // tree keeps only the invocation echo.
+  assert(
+    !slashText().includes("model: "),
+    "model result must not render in the Slash tree",
+  );
   assert(isCollapsed("Context"), "Context should be collapsed after a command");
   assert(isCollapsed("MCP"), "MCP should be collapsed after a command");
   assert(isCollapsed("LSP"), "LSP should be collapsed after a command");
@@ -463,13 +467,14 @@ await test("/rename sends the WS rename and the panel title updates on ack", asy
   fixture.session.title = "panel-test";
   stub.emit({ _type: "ack", for_type: "rename", ok: true, message: null });
   await waitFor(() => titleText() === "panel-test", "panel title updated on ack");
-  await waitFor(
-    () => slashText().includes("renamed: panel-test"),
-    "slash renamed response",
+  // item32: "renamed: …" goes to the console bus, not the Slash tree.
+  assert(
+    !slashText().includes("renamed:"),
+    "rename result must not render in the Slash tree",
   );
 });
 
-await test("/verbose toggles the flag, fires agt-verbose-changed, Slash shows verbose: on|off", async () => {
+await test("/verbose toggles the flag and fires agt-verbose-changed", async () => {
   /** @type {Array<{ verbose: boolean }>} */
   const events = [];
   window.addEventListener("agt-verbose-changed", (e) => {
@@ -477,36 +482,41 @@ await test("/verbose toggles the flag, fires agt-verbose-changed, Slash shows ve
   });
   await type("/verbose");
   await pressKey("Enter");
-  await waitFor(() => slashText().includes("verbose: on"), "verbose on");
+  await waitFor(() => slashText().includes("/verbose"), "verbose invocation echo");
   assertEqual(events.length, 1, "agt-verbose-changed fired once");
   assertEqual(events[0].verbose, true, "verbose flag true");
   assertEqual(/** @type {any} */ (app).verbose, true, "app.verbose getter");
   await type("/verbose");
   await pressKey("Enter");
-  await waitFor(() => slashText().includes("verbose: off"), "verbose off");
+  await waitFor(() => events.length === 2, "second toggle");
   assertEqual(events.length, 2, "agt-verbose-changed fired twice");
   assertEqual(events[1].verbose, false, "verbose flag false");
 });
 
-await test("/help lists the commands in the Slash section", async () => {
+await test("/help runs and leaves only the invocation echo in the Slash tree", async () => {
   await type("/help");
   await pressKey("Enter");
-  await waitFor(() => slashText().includes("/model —"), "help lists /model");
-  for (const name of ["model", "built-ins", "verbose", "rename", "help"]) {
-    assert(
-      slashText().includes(`/${name} — `),
-      `help should list /${name}, got ${JSON.stringify(slashText())}`,
-    );
-  }
+  await waitFor(() => slashText().includes("/help"), "help invocation echo");
+  // item32: the command list goes to the console bus; the Slash tree keeps
+  // only the echoed command line.
+  assert(
+    !slashText().includes("/model —"),
+    "help output must not render in the Slash tree",
+  );
 });
 
-await test("unknown command reports an error line in Slash", async () => {
+await test("unknown command leaves only the invocation echo in the Slash tree", async () => {
   await type("/frobnicate");
   assert(menuEl().hidden === true, "no menu for an unknown command");
   await pressKey("Enter");
   await waitFor(
-    () => slashText().includes("unknown command '/frobnicate'"),
-    "unknown command error",
+    () => slashText().includes("/frobnicate"),
+    "unknown command invocation echo",
+  );
+  // item32: the error goes to the console bus (console.error).
+  assert(
+    !slashText().includes("unknown command"),
+    "unknown-command error must not render in the Slash tree",
   );
 });
 
@@ -519,7 +529,7 @@ await test("click selects a menu option and runs the command", async () => {
   );
   helpOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await waitFor(() => ta().value === "", "input cleared by click-select");
-  await waitFor(() => slashText().includes("/model — "), "help ran via click");
+  await waitFor(() => slashText().includes("/help"), "help ran via click");
   assert(menuEl().hidden === true, "menu closed after click-select");
 });
 

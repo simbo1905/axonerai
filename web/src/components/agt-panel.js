@@ -331,24 +331,24 @@ export class AgtPanel extends HTMLElement {
   }
 
   /**
-   * Land a slash-command response: collapse every other tree, expand Slash,
-   * append the response line(s) to the scrollable Slash log.
+   * Land a slash-command invocation echo: since item32 the command RESULT
+   * goes to the console bus (console.html); the Slash tree keeps only the
+   * command line that was run. Collapses every other tree, expands Slash,
+   * appends the echoed command line to the scrollable Slash log.
    *
-   * @param {string} text
+   * @param {string} rawText the command line that was run (e.g. "/model")
    */
-  showSlash(text) {
+  echoSlash(rawText) {
     if (!this.#rendered) return;
     for (const [name, section] of this.#sections) {
       section.setCollapsed(name === "Slash" ? false : true);
     }
     const log = this.#slashLog;
     if (!log) return;
-    for (const line of String(text).split("\n")) {
-      const div = document.createElement("div");
-      div.className = "agt-p-line";
-      div.textContent = line;
-      log.append(div);
-    }
+    const div = document.createElement("div");
+    div.className = "agt-p-line";
+    div.textContent = String(rawText).split("\n", 1)[0] ?? String(rawText);
+    log.append(div);
     while (log.children.length > MAX_SLASH_LINES) {
       log.firstElementChild?.remove();
     }

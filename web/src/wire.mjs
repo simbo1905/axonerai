@@ -108,27 +108,30 @@ import {
  */
 
 /**
- * Recursively freeze a value (objects and arrays, cycle-safe).
+ * Recursively freeze a value (objects and arrays) in place.
+ *
+ * DAG-only: the input must not contain reference cycles (wire events, UI
+ * state and console envelopes never do), so this needs no visited-set.
+ * Primitives are left untouched and already-frozen subtrees are skipped
+ * without being re-walked.
  *
  * @template T
  * @param {T} value
  * @returns {Readonly<T>}
  */
 export function deepFreeze(value) {
-  const seen = new Set();
-  /** @param {unknown} current */
-  const freeze = (current) => {
-    if (current === null || typeof current !== "object" || seen.has(current)) {
-      return current;
+  Object.freeze(value);
+  for (const key in value) {
+    const child = /** @type {Record<string, unknown>} */ (value)[key];
+    if (
+      child !== null &&
+      typeof child === "object" &&
+      !Object.isFrozen(child)
+    ) {
+      deepFreeze(child);
     }
-    seen.add(current);
-    for (const key of Reflect.ownKeys(current)) {
-      freeze(/** @type {Record<PropertyKey, unknown>} */ (current)[key]);
-    }
-    Object.freeze(current);
-    return current;
-  };
-  return /** @type {Readonly<T>} */ (freeze(value));
+  }
+  return /** @type {Readonly<T>} */ (value);
 }
 
 const validators = {

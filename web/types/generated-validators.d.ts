@@ -56,3 +56,12 @@ export function validateAck(instance: any): ValidationError[];
  * @returns {ValidationError[]}
  */
 export function validateSession_meta(instance: any): ValidationError[];
+
+/**
+ * Validate a console envelope against its schema
+ * (`schemas/console_entry.jdt.json` — the agt-console BroadcastChannel /
+ * IndexedDB spool contract).
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateConsole_entry(instance: any): ValidationError[];

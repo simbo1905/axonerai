@@ -16,6 +16,10 @@
  *              the server ack, reports `renamed: <title>` or the ack error.
  * - help:      `run() => string` — the command list with one-line
  *              descriptions.
+ * - console:   `run() => void` — opens the devtools console popup
+ *              (/console.html). Since item32 all slash RESULTS go to the
+ *              console bus; the panel Slash tree keeps only the invocation
+ *              echo.
  */
 
 /**
@@ -73,6 +77,10 @@ export const COMMANDS = Object.freeze([
   Object.freeze({
     name: "help",
     description: "list the available commands",
+  }),
+  Object.freeze({
+    name: "console",
+    description: "open the devtools console popup",
   }),
 ]);
 

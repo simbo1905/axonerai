@@ -1,0 +1,20 @@
+{
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "pageId": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "float64"
+    },
+    "level": {
+      "enum": ["log", "info", "warn", "error"]
+    },
+    "text": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

@@ -3,6 +3,7 @@ import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
 import { dispatch, registerHandler } from "../dispatch.mjs";
 import { createStore } from "../store.mjs";
 import { COMMANDS, parseInput } from "../commands.mjs";
+import { installConsoleBus } from "../console-bus.mjs";
 import {
   extractToolCallMeta,
   initLineformat,
@@ -100,6 +101,11 @@ export class AgtApp extends HTMLElement {
   connectedCallback() {
     if (!this.#wired) {
       this.#wired = true;
+
+      // Console tee bus (item32): capture this chat screen's console from
+      // boot so log/info/warn/error also flow to the agt-console
+      // BroadcastChannel → spool worker → IndexedDB backlog.
+      installConsoleBus();
 
       const main = document.createElement("div");
       main.className = "agt-main";
@@ -385,11 +391,11 @@ export class AgtApp extends HTMLElement {
       this.#pendingRename = null;
       if (event.ok && title !== null) {
         this.#panel?.setSessionTitle(title);
-        this.#panel?.showSlash(`renamed: ${title}`);
+        console.log(`[slash] renamed: ${title}`);
         this.#fetchState();
       } else {
         const message = event.message ? `: ${event.message}` : "";
-        this.#panel?.showSlash(`error: rename failed${message}`);
+        console.error(`[slash] error: rename failed${message}`);
       }
     });
   }
@@ -433,7 +439,10 @@ export class AgtApp extends HTMLElement {
   }
 
   /**
-   * Slash command control plane (never sent to the model).
+   * Slash command control plane (never sent to the model). Since item32 the
+   * Slash tree keeps only the invocation echo; every RESULT goes to the
+   * console bus (`console.log("[slash] …")`, `console.error` for errors) so
+   * it lands in the devtools console popup.
    *
    * @param {{ rawText: string }} detail
    */
@@ -443,16 +452,21 @@ export class AgtApp extends HTMLElement {
     const parsed = parseInput(detail.rawText);
     if (parsed.kind !== "command") return;
 
+    // Minimal invocation echo: the command line that was run.
+    panel.echoSlash(detail.rawText);
+
     if (parsed.error === "empty") {
-      panel.showSlash("error: empty command — type / for the command list");
+      console.error("[slash] error: empty command — type / for the command list");
       return;
     }
     if (parsed.error === "unknown") {
-      panel.showSlash(`error: unknown command '/${parsed.name}' — try /help`);
+      console.error(
+        `[slash] error: unknown command '/${parsed.name}' — try /help`,
+      );
       return;
     }
     if (parsed.error === "missing-args") {
-      panel.showSlash(`usage: /${parsed.name} <title>`);
+      console.log(`[slash] usage: /${parsed.name} <title>`);
       return;
     }
 
@@ -460,17 +474,17 @@ export class AgtApp extends HTMLElement {
       case "model": {
         const snapshot = this.#snapshot ?? (await this.#fetchState());
         if (!snapshot) {
-          panel.showSlash("error: /api/state unavailable");
+          console.error("[slash] error: /api/state unavailable");
           return;
         }
-        panel.showSlash(
-          `model: ${snapshot.model} (provider: ${snapshot.provider})`,
+        console.log(
+          `[slash] model: ${snapshot.model} (provider: ${snapshot.provider})`,
         );
         return;
       }
       case "built-ins": {
         if (!this.#snapshot) await this.#fetchState();
-        panel.showSlash("built-ins: opened the Built-ins tree");
+        console.log("[slash] built-ins: opened the Built-ins tree");
         panel.openBuiltins();
         return;
       }
@@ -481,17 +495,17 @@ export class AgtApp extends HTMLElement {
             detail: { verbose: this.#verbose.enabled },
           }),
         );
-        panel.showSlash(`verbose: ${this.#verbose.enabled ? "on" : "off"}`);
+        console.log(`[slash] verbose: ${this.#verbose.enabled ? "on" : "off"}`);
         return;
       }
       case "rename": {
         const client = this.#client;
         if (!client || this.#status.state !== "connected") {
-          panel.showSlash("error: not connected — cannot rename");
+          console.error("[slash] error: not connected — cannot rename");
           return;
         }
         if (typeof client.sendRename !== "function") {
-          panel.showSlash("error: client does not support rename");
+          console.error("[slash] error: client does not support rename");
           return;
         }
         this.#pendingRename = parsed.args;
@@ -499,24 +513,37 @@ export class AgtApp extends HTMLElement {
           await client.sendRename(parsed.args);
         } catch (error) {
           this.#pendingRename = null;
-          panel.showSlash(
-            `error: rename failed — ${
+          console.error(
+            `[slash] error: rename failed — ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
         }
         return;
       }
+      case "console": {
+        const popup = window.open(
+          "/console.html",
+          "agt-console",
+          "popup,width=920,height=680",
+        );
+        if (popup === null) {
+          // Popup blocked: fall back to a regular tab.
+          window.open("/console.html", "_blank");
+        }
+        console.log("[slash] console: opened the devtools console popup");
+        return;
+      }
       case "help": {
-        panel.showSlash(
-          COMMANDS.map(
+        console.log(
+          `[slash] ${COMMANDS.map(
             (command) => `/${command.name} — ${command.description}`,
-          ).join("\n"),
+          ).join("\n")}`,
         );
         return;
       }
       default:
-        panel.showSlash(`error: unhandled command '/${parsed.name}'`);
+        console.error(`[slash] error: unhandled command '/${parsed.name}'`);
     }
   }
 
@@ -528,7 +555,6 @@ export class AgtApp extends HTMLElement {
    * @param {boolean} enabled
    */
   async #toggleTool(name, enabled) {
-    const panel = this.#panel;
     try {
       const res = await fetch("/api/tools", {
         method: "POST",
@@ -539,8 +565,8 @@ export class AgtApp extends HTMLElement {
         throw new Error(`POST /api/tools failed (${res.status})`);
       }
     } catch (error) {
-      panel?.showSlash(
-        `error: toggle ${name} failed — ${
+      console.error(
+        `[slash] error: toggle ${name} failed — ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
