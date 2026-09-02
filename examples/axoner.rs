@@ -52,6 +52,11 @@ async fn main() -> anyhow::Result<()> {
     let api_key = config.resolve_api_key(&provider_type)?;
     let endpoint = config.endpoint(&provider_type)?;
 
+    let system_prompt = Some(axonerai::prompt::load_system_prompt(
+        &provider_type,
+        &model_id,
+    ));
+
     let provider: Box<dyn Provider> = match provider_type.as_str() {
         "mistral" => {
             let mut p = MistralProvider::new(api_key);
@@ -94,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
     let session_id = Uuid::new_v4().to_string();
     println!("Session ID: {}", session_id);
 
-    let agent = Agent::new(provider, tools, None, None);
+    let agent = Agent::new(provider, tools, system_prompt, None);
 
     let prompt = "Calculate 2 + 2".to_string();
     println!("User: {}", prompt);

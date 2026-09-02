@@ -1,5 +1,6 @@
 // @ts-check
 import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
+import { dispatch, registerHandler } from "../dispatch.mjs";
 import "./agt-status.js";
 import "./agt-chat-log.js";
 import "./agt-composer.js";
@@ -66,6 +67,7 @@ export class AgtApp extends HTMLElement {
   }
 
   async #wireClient() {
+    this.#registerEventHandlers();
     try {
       const client = await waitForAgtClient();
       this.#client = client;
@@ -92,6 +94,35 @@ export class AgtApp extends HTMLElement {
   }
 
   /**
+   * Register the business-logic handlers for each server `_type` on the
+   * dispatch layer. Handlers receive the validated, deep-frozen event and
+   * append it to frozen state; assistant/error clear the matching pending
+   * prompt id so the composer re-enables.
+   */
+  #registerEventHandlers() {
+    registerHandler("ready", (event) => {
+      this.#pushEvent(event);
+    });
+    registerHandler("pong", (event) => {
+      this.#pushEvent(event);
+    });
+    registerHandler("assistant", (event) => {
+      this.#pushEvent(event);
+      if (event._type === "assistant" && event.id) {
+        this.#pending.delete(event.id);
+        this.#render();
+      }
+    });
+    registerHandler("error", (event) => {
+      this.#pushEvent(event);
+      if (event._type === "error" && event.id) {
+        this.#pending.delete(event.id);
+        this.#render();
+      }
+    });
+  }
+
+  /**
    * Handle a validated, deep-frozen wire event delivered by the client.
    * Invalid frames are already dropped (and logged) by wire.mjs; this null
    * guard is purely defensive.
@@ -100,14 +131,7 @@ export class AgtApp extends HTMLElement {
    */
   #handleEvent(event) {
     if (event === null) return;
-    this.#pushEvent(event);
-    if (
-      (event._type === "assistant" || event._type === "error") &&
-      event.id
-    ) {
-      this.#pending.delete(event.id);
-      this.#render();
-    }
+    dispatch(event);
   }
 
   /**

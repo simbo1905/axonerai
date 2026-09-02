@@ -393,10 +393,10 @@ fn build_agent_from_config(
         registry.register(Box::new(WebFetch::new()));
     }
 
-    let system_prompt = Some(
-        "You are a helpful assistant. You have several tools at your disposal. Use tools when needed."
-            .to_string(),
-    );
+    let system_prompt = Some(axonerai::prompt::load_system_prompt(
+        &provider_name,
+        &model_id,
+    ));
 
     Ok(Arc::new(Agent::new(
         provider,

@@ -14,6 +14,12 @@
           "name": "Z.ai GLM 5.2",
           "thinking": false,
           "thinking_levels": []
+        },
+        {
+          "id": "mistral-medium-latest",
+          "name": "Mistral Medium",
+          "thinking": false,
+          "thinking_levels": []
         }
       ]
     },
@@ -26,12 +32,6 @@
         {
           "id": "glm-5.2",
           "name": "GLM 5.2",
-          "thinking": false,
-          "thinking_levels": []
-        },
-        {
-          "id": "glm-5.1",
-          "name": "GLM 5.1",
           "thinking": false,
           "thinking_levels": []
         }
@@ -48,12 +48,6 @@
           "name": "GLM 5.2",
           "thinking": false,
           "thinking_levels": []
-        },
-        {
-          "id": "glm-5.3",
-          "name": "GLM 5.3",
-          "thinking": false,
-          "thinking_levels": []
         }
       ]
     },
@@ -63,6 +57,18 @@
       "env_key": "GROQ_API_KEY",
       "default_model": "openai/gpt-oss-120b",
       "models": [
+        {
+          "id": "qwen/qwen3.8-27b",
+          "name": "Qwen3 8 27B",
+          "thinking": false,
+          "thinking_levels": []
+        },
+        {
+          "id": "openai/gpt-oss-20b",
+          "name": "GPT-OSS 20B",
+          "thinking": false,
+          "thinking_levels": []
+        },
         {
           "id": "openai/gpt-oss-120b",
           "name": "GPT-OSS 120B",

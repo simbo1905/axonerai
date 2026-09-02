@@ -6,6 +6,7 @@ pub mod groq;
 pub mod mistral;
 pub mod openai;
 pub mod opencode;
+pub mod prompt;
 pub mod provider;
 pub mod session;
 pub mod tool;

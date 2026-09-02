@@ -5,7 +5,13 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types
+.PHONY: validators clean-validators check-types prompts
+
+# Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
+# Must run before `cargo build`: src/prompt.rs embeds
+# prompts/generated/default.txt at compile time via include_str!.
+prompts:
+	node prompts/build.mjs
 
 check-types:
 	$(TSC) --noEmit
