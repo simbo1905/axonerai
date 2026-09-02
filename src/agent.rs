@@ -131,13 +131,15 @@ impl Agent {
 
                     // Execute the tools one call at a time, emitting a
                     // full-fidelity trace per call (per-call timing required;
-                    // batch timing is not acceptable).
+                    // batch timing is not acceptable). Per-call failures are
+                    // captured as error results fed back to the model — a bad
+                    // tool call must not abort the run.
                     let mut tool_results = Vec::with_capacity(response.tool_calls.len());
                     for call in &response.tool_calls {
                         let args_pretty =
                             serde_json::to_string_pretty(&call.input).unwrap_or_default();
                         let started = Instant::now();
-                        let result = executor.execute(call).await?;
+                        let result = executor.execute_captured(call).await;
                         let duration_ms = started.elapsed().as_millis() as u64;
                         let result_pretty =
                             serde_json::to_string_pretty(&result.result).unwrap_or_default();

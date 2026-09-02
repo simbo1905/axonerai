@@ -31,24 +31,44 @@ impl<'a> ToolExecutor<'a> {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
             result,
+            is_error: false,
         })
     }
 
-    /// Execute multiple tool calls
+    /// Execute a single tool call, capturing failures as an error
+    /// [`ToolResult`] instead of propagating the Err. Agent-loop semantics:
+    /// tool executions ALWAYS produce a tool result — errors go back to the
+    /// model as the result content so it can retry or explain.
+    pub async fn execute_captured(&self, tool_call: &ToolCall) -> ToolResult {
+        match self.execute(tool_call).await {
+            Ok(result) => result,
+            Err(e) => ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                result: format!("error: {e}"),
+                is_error: true,
+            },
+        }
+    }
 
-    pub async fn execute_all(&self, tool_calls: &[ToolCall]) -> Result<Vec<ToolResult>> {
+    /// Execute multiple tool calls, capturing per-call failures as error
+    /// results (one bad call must not abort the batch).
+    pub async fn execute_all(&self, tool_calls: &[ToolCall]) -> Vec<ToolResult> {
         let mut results = Vec::new();
         for call in tool_calls {
-            results.push(self.execute(call).await?);
+            results.push(self.execute_captured(call).await);
         }
-        Ok(results)
+        results
     }
 }
 
-/// Result from executing a tool
+/// Result from executing a tool. `is_error` marks a failed execution whose
+/// `result` carries the error text; it is agent-internal state and is NOT
+/// sent to the LLM (the tool message content already carries the error).
 #[derive(Debug, Clone)]
 pub struct ToolResult {
     pub tool_call_id: String,
     pub tool_name: String,
     pub result: String,
+    pub is_error: bool,
 }
