@@ -1,5 +1,6 @@
 use crate::provider::Message;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Session {
@@ -22,6 +23,38 @@ impl Session {
 
     pub fn get_messages(&self) -> &Vec<Message> {
         &self.messages
+    }
+}
+
+/// Tokens estimate for the model's context: bytes/4 (floor) over the JSON
+/// serialization of the provider messages, plus the system prompt bytes when
+/// one is loaded. Protocol events (ready/session_meta/echo) are never part
+/// of the model's context and must not be counted.
+pub fn estimate_tokens(messages: &[Message], system_prompt: Option<&str>) -> u64 {
+    let mut bytes = serde_json::to_vec(messages).map_or(0, |v| v.len());
+    if let Some(prompt) = system_prompt {
+        bytes += prompt.len();
+    }
+    bytes as u64 / 4
+}
+
+/// Context tokens for a session read from its persisted agent-state file
+/// (`<agent_state_dir>/<session_id>/messages.json`, the file
+/// [`crate::file_session_manager::FileSessionManager`] maintains). 0 when the
+/// file is missing or unreadable — a freshly-connected session has no model
+/// context yet, no matter how many protocol frames the rollout carries.
+pub fn context_tokens_on_disk(
+    agent_state_dir: &Path,
+    session_id: &str,
+    system_prompt: Option<&str>,
+) -> u64 {
+    let path = agent_state_dir.join(session_id).join("messages.json");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return 0;
+    };
+    match serde_json::from_str::<Session>(&content) {
+        Ok(session) => estimate_tokens(session.get_messages(), system_prompt),
+        Err(_) => 0,
     }
 }
 

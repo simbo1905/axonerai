@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -19,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 use axonerai::agent::ToolTrace;
 use axonerai::rollout::{self, Rollout, SessionInfo};
+use axonerai::session::context_tokens_on_disk;
 use axonerai::settings::Settings;
 use axonerai::tool::{ToolInfo, ToolRegistry};
 use axonerai::tools::{
@@ -106,33 +106,24 @@ struct AppState {
     /// Registry clone sharing tool instances and suppression state with the
     /// agent's registry (both fields are Arc-backed in `ToolRegistry`).
     registry: ToolRegistry,
-    /// Running total of rollout bytes appended this run; context tokens are
-    /// bytes/4 (floor). Bumped at every rollout append site.
-    context_bytes: Arc<AtomicU64>,
+    /// Directory holding the per-session agent-state files
+    /// (`<sessions_dir>/agent-state/<uuid>/messages.json`), the same files
+    /// the agent persists via `FileSessionManager`.
+    agent_state_dir: PathBuf,
+    /// The system prompt sent to the provider with every completion
+    /// (included in the context estimate when loaded).
+    system_prompt: Option<String>,
 }
 
 impl AppState {
-    fn bump_context_bytes(&self, n: u64) {
-        if n > 0 {
-            self.context_bytes.fetch_add(n, Ordering::Relaxed);
-        }
-    }
-
-    /// Durable-first append with a context-byte counter bump: the counter
-    /// tracks every byte written to the rollout (payload + newline).
+    /// Durable-first append to the rollout.
     fn append_event(&self, value: &serde_json::Value) {
-        self.bump_context_bytes(
-            serde_json::to_string(value)
-                .map(|s| s.len() as u64 + 1)
-                .unwrap_or(0),
-        );
         let _ = self.rollout.append_event(value);
     }
 
     /// Raw-JSON variant of [`AppState::append_event`] (payload-last field
     /// order preserved on disk).
     fn append_json(&self, json: &str) {
-        self.bump_context_bytes(json.len() as u64 + 1);
         let _ = self.rollout.append_json(json);
     }
 }
@@ -319,6 +310,13 @@ async fn serve(
         });
     let registry = build_registry();
 
+    // The system prompt is fixed for the run (no API key needed to load it);
+    // it is sent with every completion and included in the context estimate.
+    let system_prompt = Some(axonerai::prompt::load_system_prompt(
+        &provider_name,
+        &model_id,
+    ));
+
     let sessions_dir = rollout::default_dir();
     let (session_rollout, session_id) = resolve_session(&sessions_dir, continue_, session)?;
 
@@ -329,15 +327,11 @@ async fn serve(
         registry.clone(),
         &sessions_dir,
         &session_id,
+        system_prompt.clone(),
     )
     .ok();
 
-    // Seed the context counter with the rollout size so bytes appended
-    // before AppState existed (session creation + meta lines) are counted.
-    let rollout_bytes_so_far = std::fs::metadata(session_rollout.path())
-        .map(|m| m.len())
-        .unwrap_or(0);
-
+    let agent_state_dir = sessions_dir.join("agent-state");
     let state = AppState {
         web_root,
         agent,
@@ -347,7 +341,8 @@ async fn serve(
         provider: provider_name.clone(),
         model: model_id.clone(),
         registry,
-        context_bytes: Arc::new(AtomicU64::new(rollout_bytes_so_far)),
+        agent_state_dir,
+        system_prompt,
     };
 
     let assets_dir = state.web_root.join("assets");
@@ -560,8 +555,11 @@ fn session_title(state: &AppState) -> String {
 }
 
 /// GET /api/state — provider/model/session/repo/context/tools/mcp snapshot.
-/// Context tokens are the running rollout-bytes counter divided by 4 (floor);
-/// it is NOT a rescan of the rollout.
+/// Context tokens are the model's context estimate: bytes/4 (floor) over the
+/// JSON serialization of the session's provider messages (the per-session
+/// agent-state file, system prompt included when loaded). Protocol events
+/// (ready/session_meta/echo) are excluded entirely; a session with no
+/// messages reports 0.
 async fn api_state(State(state): State<AppState>) -> Response {
     // Title resolution must match the sessions index: the last `session_rename`
     // wins over the first `session_meta` (Rollout::title() only sees the meta).
@@ -579,7 +577,11 @@ async fn api_state(State(state): State<AppState>) -> Response {
             branch: current_branch(&cwd),
         },
         context: ContextSnapshot {
-            tokens: state.context_bytes.load(Ordering::Relaxed) / 4,
+            tokens: context_tokens_on_disk(
+                &state.agent_state_dir,
+                &state.session_id,
+                state.system_prompt.as_deref(),
+            ),
         },
         tools: state.registry.list_tools_info(),
         mcp: mcp_servers(),
@@ -1092,6 +1094,7 @@ fn build_agent_from_config(
     registry: ToolRegistry,
     sessions_dir: &std::path::Path,
     session_id: &str,
+    system_prompt: Option<String>,
 ) -> anyhow::Result<Arc<Agent>> {
     let api_key = config.resolve_api_key(provider_name)?;
     let endpoint = config.endpoint(provider_name)?;
@@ -1128,11 +1131,6 @@ fn build_agent_from_config(
             Box::new(OpenCodeProvider::new(api_key, endpoint.to_string(), model))
         }
     };
-
-    let system_prompt = Some(axonerai::prompt::load_system_prompt(
-        &provider_name,
-        &model_id,
-    ));
 
     let session_manager =
         FileSessionManager::new(session_id.to_string(), sessions_dir.join("agent-state"))?;

@@ -22,8 +22,9 @@ paths:
         on/off state, and registered MCP servers. `mcp` lists `tavily` as
         connected when TAVILY_API_KEY is set; `lsp` is a placeholder (always
         empty) and `todo` is a placeholder (always null). Context tokens are
-        the running counter of rollout bytes appended divided by 4 (floor);
-        it is not a rescan of the rollout.
+        a bytes/4 estimate over the JSON serialization of the session's
+        provider messages (the per-session agent-state file, system prompt
+        included when loaded); WS protocol frames are excluded entirely.
       responses:
         "200":
           description: Current state
@@ -188,7 +189,10 @@ components:
           properties:
             tokens:
               type: integer
-              description: Rollout bytes appended this run divided by 4 (floor)
+              description: >-
+                Model context estimate: bytes/4 (floor) over the JSON
+                serialization of the session's provider messages (system
+                prompt included when loaded); 0 when there are no messages
           required: [tokens]
         tools:
           type: array
