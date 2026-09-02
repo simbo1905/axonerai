@@ -3,7 +3,8 @@
 //   - window.AgtClient.connect({ onOpen, onClose, onError, onEvent })
 //   - window.AgtClient.sendPrompt(text, id?) -> Promise<string>
 
-import { parseWireEventText } from "/src/wire.mjs";
+import { parseWireEventText, deepFreeze } from "/src/wire.mjs";
+import { validateAck, validateSession_meta } from "/generated/validators.mjs";
 
 const WS_PATH = "/ws";
 
@@ -47,7 +48,24 @@ async function connect({ onOpen, onClose, onError, onEvent } = {}) {
   socket.onmessage = (ev) => {
     // Validate + deep-freeze every incoming frame before any handling.
     // Dropped (null) frames are already logged by wire.mjs.
-    const msg = parseWireEventText(ev.data);
+    let msg = parseWireEventText(ev.data);
+    // ack/session_meta are not yet in wire.mjs's validator registry (wire
+    // layer follow-on); validate them here against the same generated JTD
+    // validators so the UI still receives typed frozen events.
+    if (msg === null) {
+      let raw = null;
+      try {
+        raw = JSON.parse(ev.data);
+      } catch (_) {
+        return;
+      }
+      const type = raw !== null && typeof raw === "object" ? raw._type : undefined;
+      if (type === "ack") {
+        if (validateAck(raw).length === 0) msg = deepFreeze(raw);
+      } else if (type === "session_meta") {
+        if (validateSession_meta(raw).length === 0) msg = deepFreeze(raw);
+      }
+    }
     if (msg === null) {
       return;
     }
@@ -121,9 +139,19 @@ async function sendPrompt(text, id) {
   return p;
 }
 
+async function sendRename(title) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    throw new Error("not connected");
+  }
+  // Control-plane frame; the reply arrives as an `ack` event with
+  // for_type === "rename" (delivered to the UI via onEvent).
+  socket.send(JSON.stringify({ _type: "rename", title: String(title) }));
+}
+
 window.AgtClient = {
   connect,
   dispose,
   sendPrompt,
+  sendRename,
 };
 

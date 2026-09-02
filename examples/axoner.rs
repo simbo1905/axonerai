@@ -1,5 +1,7 @@
 use axonerai::provider::Provider;
-use axonerai::tools::{Calculator, WebFetch, WebSearch, WriteFile};
+use axonerai::tools::{
+    Calculator, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
+};
 use axonerai::{
     Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
 };
@@ -93,6 +95,9 @@ async fn main() -> anyhow::Result<()> {
     if env::var("TAVILY_API_KEY").is_ok() {
         tools.register(Box::new(WebSearch::new()));
         tools.register(Box::new(WebFetch::new()));
+        // Fake Tavily MCP facade: MCP-style tools with no MCP host process.
+        tools.register(Box::new(TavilyMcpSearch::new()));
+        tools.register(Box::new(TavilyMcpExtract::new()));
     }
     println!("Available tools: {:?}", &tools.list_tools());
 

@@ -21,6 +21,10 @@ impl<'a> ToolExecutor<'a> {
             .get(&tool_call.name)
             .ok_or_else(|| anyhow!("Tool not found: {}", tool_call.name))?;
 
+        if self.registry.is_suppressed(&tool_call.name) {
+            return Err(anyhow!("tool '{}' is disabled", tool_call.name));
+        }
+
         let result = tool.execute(tool_call.input.clone()).await?;
 
         Ok(ToolResult {

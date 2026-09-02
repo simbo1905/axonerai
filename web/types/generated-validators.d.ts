@@ -42,3 +42,17 @@ export function validateAssistant(instance: any): ValidationError[];
  * @returns {ValidationError[]}
  */
 export function validateError(instance: any): ValidationError[];
+
+/**
+ * Validate an `ack` event against its schema.
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateAck(instance: any): ValidationError[];
+
+/**
+ * Validate a `session_meta` event against its schema.
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateSession_meta(instance: any): ValidationError[];

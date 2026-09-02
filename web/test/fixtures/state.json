@@ -1,0 +1,14 @@
+{
+  "provider": "mistral",
+  "model": "zai-glm-5-2",
+  "session": { "id": "11111111-2222-3333-4444-555555555555", "title": "axonerai" },
+  "repo": { "path": "/Users/Shared/axonerai", "branch": "simbo1905" },
+  "context": { "tokens": 12345 },
+  "tools": [
+    { "name": "WebSearch", "enabled": true, "source": "builtin" },
+    { "name": "tavily_search", "enabled": true, "source": "mcp" }
+  ],
+  "mcp": [{ "name": "tavily", "status": "connected" }],
+  "lsp": [],
+  "todo": null
+}

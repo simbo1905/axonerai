@@ -1,0 +1,270 @@
+openapi: 3.1.0
+info:
+  title: axoner-web control plane
+  description: >
+    REST surface of the axoner-web server (example `axoner-web`). The
+    interactive agent traffic runs over the `/ws` WebSocket; these endpoints
+    are the control plane the UI panel renders: state snapshot, tool
+    on/off toggles, session index and rollout catch-up streams.
+  version: 0.1.1
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local server (the actual port is chosen at startup)
+
+paths:
+  /api/state:
+    get:
+      summary: Control-plane state snapshot
+      description: >
+        Snapshot of the running server: active provider/model, current
+        session, repo info, approximate context size, tool registry with
+        on/off state, and registered MCP servers. `mcp` lists `tavily` as
+        connected when TAVILY_API_KEY is set; `lsp` is a placeholder (always
+        empty) and `todo` is a placeholder (always null). Context tokens are
+        the running counter of rollout bytes appended divided by 4 (floor);
+        it is not a rescan of the rollout.
+      responses:
+        "200":
+          description: Current state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StateSnapshot"
+
+  /api/tools:
+    post:
+      summary: Enable or disable a tool
+      description: >
+        Toggles a registered tool's suppression state. Disabled tools are
+        hidden from the model and error on execution. The state is persisted
+        to `.axonerai/settings.jsonc` and survives server restarts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolToggle"
+      responses:
+        "200":
+          description: Toggle applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                required: [ok]
+        "400":
+          description: The tool name is not in the registry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: false
+                  error:
+                    type: string
+                    const: unknown tool
+                required: [ok, error]
+
+  /api/sessions:
+    get:
+      summary: Session index
+      description: All rollout sessions, newest first.
+      responses:
+        "200":
+          description: Session list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionInfo"
+
+  /api/session/{uuid}:
+    get:
+      summary: Rollout catch-up stream
+      description: >
+        Chunked line-format stream (`application/x-rollout-line`) of rollout
+        events after `after` (epoch millis). Frames are
+        `<ts>\0<type>\0<payload>\n`; oversized payloads are cut
+        char-boundary-safe and detected by a failed strict JSON parse on the
+        client. `tool_trace` records are never streamed. The scan halts
+        cleanly at the first corrupt line.
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            description: Lowercase UUID v7 session id
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            description: Only stream events with ts strictly greater than this
+      responses:
+        "200":
+          description: Line-format stream
+          content:
+            application/x-rollout-line:
+              schema:
+                type: string
+        "400":
+          description: Invalid session id
+        "404":
+          description: Session not found
+
+  /api/session/{uuid}/tail:
+    get:
+      summary: Rollout frontier timestamp
+      description: Last event timestamp of the rollout, for frontier checks.
+      parameters:
+        - name: uuid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Frontier timestamp
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  _ts:
+                    type: integer
+                    format: int64
+                required: [_ts]
+        "400":
+          description: Invalid session id
+        "404":
+          description: Session not found
+
+components:
+  schemas:
+    StateSnapshot:
+      type: object
+      properties:
+        provider:
+          type: string
+          description: Active provider name (e.g. "mistral")
+        model:
+          type: string
+          description: Active model id (e.g. "zai-glm-5-2")
+        session:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            title:
+              type: string
+          required: [id, title]
+        repo:
+          type: object
+          properties:
+            path:
+              type: string
+              description: Absolute cwd of the server process
+            branch:
+              type: [string, "null"]
+              description: >
+                Current git branch parsed from .git/HEAD (no subprocess);
+                short sha on detached HEAD; null when not a repo
+          required: [path, branch]
+        context:
+          type: object
+          properties:
+            tokens:
+              type: integer
+              description: Rollout bytes appended this run divided by 4 (floor)
+          required: [tokens]
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolInfo"
+        mcp:
+          type: array
+          items:
+            $ref: "#/components/schemas/McpServer"
+        lsp:
+          type: array
+          items: {}
+          description: Placeholder — always empty
+        todo:
+          description: Placeholder — always null
+      required:
+        - provider
+        - model
+        - session
+        - repo
+        - context
+        - tools
+        - mcp
+        - lsp
+        - todo
+
+    ToolInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Tool name (e.g. "WebSearch", "tavily_search")
+        enabled:
+          type: boolean
+          description: false when the tool is suppressed
+        source:
+          type: string
+          enum: [builtin, mcp]
+      required: [name, enabled, source]
+
+    McpServer:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Server name (e.g. "tavily")
+        status:
+          type: string
+          enum: [connected]
+      required: [name, status]
+
+    ToolToggle:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Registered tool name
+        enabled:
+          type: boolean
+          description: true to enable, false to disable (suppress)
+      required: [name, enabled]
+
+    SessionInfo:
+      type: object
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        title:
+          type: string
+        updated:
+          type: integer
+          format: int64
+          description: Last-update epoch millis
+        size:
+          type: integer
+          format: int64
+          description: Rollout file size in bytes
+      required: [uuid, title, updated, size]

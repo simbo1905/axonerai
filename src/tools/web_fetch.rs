@@ -1,5 +1,6 @@
 use crate::tool::Tool;
-use anyhow::{Ok, Result, anyhow};
+use crate::tools::tavily::{self, DEFAULT_TAVILY_BASE_URL};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,10 +8,6 @@ use std::env;
 
 #[cfg(feature = "web")]
 use tracing::debug;
-
-const DEFAULT_TAVILY_BASE_URL: &str = "https://api.tavily.com";
-const MAX_OUTPUT_CHARS: usize = 8000;
-const TRUNCATION_MARKER: &str = "[… truncated]";
 
 pub struct WebFetch {
     base_url: String,
@@ -78,78 +75,14 @@ impl Tool for WebFetch {
         let api_key = env::var("TAVILY_API_KEY")
             .map_err(|_| anyhow!("TAVILY_API_KEY environment variable is not set; the WebFetch tool requires a Tavily API key"))?;
 
-        let mut body = json!({
-            "urls": [input.url],
-            "extract_depth": "basic"
-        });
-        if let Some(query) = &input.query {
-            body["query"] = json!(query);
-        }
-
-        let url = format!("{}/extract", self.base_url.trim_end_matches('/'));
-        let response = reqwest::Client::new()
-            .post(url)
-            .bearer_auth(&api_key)
-            .json(&body)
-            .send()
-            .await?;
-
-        let status = response.status();
-        let response_body = response.text().await?;
-        if !status.is_success() {
-            let excerpt: String = response_body.chars().take(200).collect();
-            return Err(anyhow!(
-                "WebFetch request failed with status {}: {}",
-                status,
-                excerpt
-            ));
-        }
-
-        let data: Value = serde_json::from_str(&response_body)?;
-        format_extract(&data)
+        tavily::extract(&self.base_url, &api_key, &input.url, input.query.as_deref()).await
     }
-}
-
-fn format_extract(data: &Value) -> Result<String> {
-    let results = data["results"]
-        .as_array()
-        .ok_or_else(|| anyhow!("Missing results in Tavily response"))?;
-
-    let mut output = String::new();
-    for result in results {
-        let url = result["url"].as_str().unwrap_or("");
-        let raw_content = result["raw_content"].as_str().unwrap_or("");
-
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output.push_str(&format!("== {} ==\n", url));
-        if raw_content.is_empty() {
-            output.push_str("(no content extracted)");
-        } else {
-            output.push_str(raw_content);
-        }
-    }
-
-    if output.chars().count() > MAX_OUTPUT_CHARS {
-        let keep = MAX_OUTPUT_CHARS - TRUNCATION_MARKER.chars().count();
-        let truncated: String = output.chars().take(keep).collect();
-        output = format!("{}{}", truncated, TRUNCATION_MARKER);
-    }
-
-    if let Some(failed) = data["failed_results"].as_array() {
-        let failed_urls: Vec<&str> = failed.iter().filter_map(|f| f["url"].as_str()).collect();
-        if !failed_urls.is_empty() {
-            output.push_str(&format!("\n\nFailed to fetch: {}", failed_urls.join(", ")));
-        }
-    }
-
-    Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::tavily::{MAX_OUTPUT_CHARS, TRUNCATION_MARKER};
     use crate::tools::testing::{env_guard, set_key, spawn_stub, unset_key};
     use serde_json::json;
 

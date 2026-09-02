@@ -22,6 +22,11 @@ declare global {
        * with the matching `assistant` reply text or rejects on `error`.
        */
       sendPrompt(text: string, id?: string): Promise<string>;
+      /**
+       * Send a control-plane `rename` frame over the websocket. The server's
+       * reply arrives as an `ack` event (for_type "rename") via onEvent.
+       */
+      sendRename?(title: string): Promise<void> | void;
       dispose(): void;
     };
     __WIRE_TEST_RESULTS__?: {
@@ -33,6 +38,18 @@ declare global {
       pass: number;
       fail: number;
       details: Array<{ name: string; ok: boolean; error?: string }>;
+    };
+    /** Headless panel + slash-menu results (panel.headless.mjs). */
+    __PANEL_TEST_RESULTS__?: {
+      pass: number;
+      fail: number;
+      details: Array<{ name: string; ok: boolean; error?: string }>;
+    };
+    /** Stub client hooks installed by panel.headless.mjs. */
+    __PANEL_STUB__?: {
+      emit(frame: unknown): void;
+      renames: string[];
+      postCalls: Array<{ name: string; enabled: boolean }>;
     };
     /** Headless pretty-printer smoke results (pretty.headless.mjs). */
     __PRETTY_TEST_RESULTS__?: {

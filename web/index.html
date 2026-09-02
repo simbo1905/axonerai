@@ -20,13 +20,34 @@
 
       agt-app {
         display: flex;
-        flex-direction: column;
+        flex-direction: row;
+        align-items: stretch;
         gap: 12px;
         box-sizing: border-box;
         height: 100vh;
-        max-width: 860px;
+        max-width: 1200px;
         margin: 0 auto;
         padding: 16px;
+      }
+
+      /* Chat column (flexible) beside the fixed-width TUI side panel. */
+      agt-app .agt-main {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+      }
+
+      agt-panel {
+        flex: 0 0 300px;
+        width: 300px;
+        min-height: 0;
+      }
+      agt-panel[collapsed] {
+        flex: 0 0 auto;
+        width: auto;
       }
 
       agt-status { display: block; }
@@ -89,7 +110,43 @@
         line-height: 1.5;
       }
 
-      agt-composer { display: flex; gap: 8px; align-items: flex-end; }
+      agt-composer { display: flex; gap: 8px; align-items: flex-end; position: relative; }
+
+      /* Slash-command menu overlaying/above the composer input. */
+      .slash-menu {
+        position: absolute;
+        bottom: calc(100% + 6px);
+        left: 0;
+        right: 0;
+        z-index: 10;
+        max-height: 220px;
+        overflow-y: auto;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+      }
+      .slash-menu[hidden] { display: none; }
+      .slash-option {
+        display: flex;
+        gap: 10px;
+        padding: 7px 10px;
+        cursor: pointer;
+        color: #e5e7eb;
+      }
+      .slash-option.active { background: #1d4ed8; color: #ffffff; }
+      .slash-option-name { flex: none; min-width: 9ch; color: #6ee7b7; }
+      .slash-option.active .slash-option-name { color: #ffffff; }
+      .slash-option-desc {
+        flex: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        opacity: 0.8;
+      }
+
       .composer-input {
         flex: 1;
         resize: vertical;

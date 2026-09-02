@@ -174,6 +174,31 @@ window.AgtClient = {
 
 // ------------------------------------------------------------- load the UI
 
+// Tiny extension: stub /api/state (fixture JSON) and /api/tools BEFORE the
+// app is imported so agt-app's control-plane fetches stay console-clean.
+// Assertions below are unmodified.
+const realFetch = window.fetch.bind(window);
+/** @type {any} */
+const stateFixture = await (
+  await realFetch("/test/fixtures/state.json")
+).json();
+window.fetch = /** @type {typeof window.fetch} */ (async (input, init) => {
+  const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+  if (url === "/api/state") {
+    return new Response(JSON.stringify(stateFixture), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (url === "/api/tools" && init && init.method === "POST") {
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return realFetch(/** @type {RequestInfo} */ (input), init);
+});
+
 await import("/src/components/agt-app.js");
 
 const app = need(document.querySelector("agt-app"), "agt-app element missing");

@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -9,20 +10,22 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderName, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use axonerai::agent::ToolTrace;
 use axonerai::rollout::{self, Rollout, SessionInfo};
-use axonerai::tools::{Calculator, WebFetch, WebSearch, WriteFile};
-use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
-use axonerai::{
-    Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
+use axonerai::settings::Settings;
+use axonerai::tool::{ToolInfo, ToolRegistry};
+use axonerai::tools::{
+    Calculator, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
+use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
+use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider};
 
 /// Max characters for large string fields on WS egress to the browser. The
 /// rollout always stores FULL text; abridge is applied only when serving.
@@ -95,6 +98,40 @@ struct AppState {
     verbose: u8,
     rollout: Arc<Rollout>,
     session_id: String,
+    provider: String,
+    model: String,
+    /// Registry clone sharing tool instances and suppression state with the
+    /// agent's registry (both fields are Arc-backed in `ToolRegistry`).
+    registry: ToolRegistry,
+    /// Running total of rollout bytes appended this run; context tokens are
+    /// bytes/4 (floor). Bumped at every rollout append site.
+    context_bytes: Arc<AtomicU64>,
+}
+
+impl AppState {
+    fn bump_context_bytes(&self, n: u64) {
+        if n > 0 {
+            self.context_bytes.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Durable-first append with a context-byte counter bump: the counter
+    /// tracks every byte written to the rollout (payload + newline).
+    fn append_event(&self, value: &serde_json::Value) {
+        self.bump_context_bytes(
+            serde_json::to_string(value)
+                .map(|s| s.len() as u64 + 1)
+                .unwrap_or(0),
+        );
+        let _ = self.rollout.append_event(value);
+    }
+
+    /// Raw-JSON variant of [`AppState::append_event`] (payload-last field
+    /// order preserved on disk).
+    fn append_json(&self, json: &str) {
+        self.bump_context_bytes(json.len() as u64 + 1);
+        let _ = self.rollout.append_json(json);
+    }
 }
 
 /// Load environment variables from a .env file if it exists
@@ -269,11 +306,17 @@ async fn serve(
                 .unwrap_or_default()
                 .to_string()
         });
-
-    let agent = build_agent_from_config(&config, &provider_name, &model_id).ok();
+    let registry = build_registry();
+    let agent = build_agent_from_config(&config, &provider_name, &model_id, registry.clone()).ok();
 
     let sessions_dir = rollout::default_dir();
     let (session_rollout, session_id) = resolve_session(&sessions_dir, continue_, session)?;
+
+    // Seed the context counter with the rollout size so bytes appended
+    // before AppState existed (session creation + meta lines) are counted.
+    let rollout_bytes_so_far = std::fs::metadata(session_rollout.path())
+        .map(|m| m.len())
+        .unwrap_or(0);
 
     let state = AppState {
         web_root,
@@ -281,6 +324,10 @@ async fn serve(
         verbose,
         rollout: session_rollout,
         session_id: session_id.clone(),
+        provider: provider_name.clone(),
+        model: model_id.clone(),
+        registry,
+        context_bytes: Arc::new(AtomicU64::new(rollout_bytes_so_far)),
     };
 
     let assets_dir = state.web_root.join("assets");
@@ -296,6 +343,9 @@ async fn serve(
         .route("/api/sessions", get(api_sessions))
         .route("/api/session/:uuid", get(api_session_catchup))
         .route("/api/session/:uuid/tail", get(api_session_tail))
+        .route("/api/state", get(api_state))
+        .route("/api/tools", post(api_tools_toggle))
+        .route("/openapi.yaml", get(openapi_yaml))
         .nest_service("/assets", assets_service)
         .nest_service("/src", src_service)
         .nest_service("/test", test_service)
@@ -418,6 +468,158 @@ async fn api_sessions() -> Response {
     Json(sessions).into_response()
 }
 
+// --- Control-plane state snapshot (GET /api/state) ------------------------
+
+#[derive(serde::Serialize)]
+struct SessionSnapshot {
+    id: String,
+    title: String,
+}
+
+#[derive(serde::Serialize)]
+struct RepoSnapshot {
+    path: String,
+    branch: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ContextSnapshot {
+    tokens: u64,
+}
+
+#[derive(serde::Serialize)]
+struct McpServerInfo {
+    name: String,
+    status: String,
+}
+
+/// The control-plane snapshot the UI panel renders. Field order matches the
+/// pinned API contract.
+#[derive(serde::Serialize)]
+struct StateSnapshot {
+    provider: String,
+    model: String,
+    session: SessionSnapshot,
+    repo: RepoSnapshot,
+    context: ContextSnapshot,
+    tools: Vec<ToolInfo>,
+    mcp: Vec<McpServerInfo>,
+    lsp: Vec<serde_json::Value>,
+    todo: serde_json::Value,
+}
+
+/// GET /api/state — provider/model/session/repo/context/tools/mcp snapshot.
+/// Context tokens are the running rollout-bytes counter divided by 4 (floor);
+/// it is NOT a rescan of the rollout.
+async fn api_state(State(state): State<AppState>) -> Response {
+    let title = state
+        .rollout
+        .title()
+        .unwrap_or_else(|_| state.session_id.clone());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let snapshot = StateSnapshot {
+        provider: state.provider.clone(),
+        model: state.model.clone(),
+        session: SessionSnapshot {
+            id: state.session_id.clone(),
+            title,
+        },
+        repo: RepoSnapshot {
+            path: cwd.display().to_string(),
+            branch: current_branch(&cwd),
+        },
+        context: ContextSnapshot {
+            tokens: state.context_bytes.load(Ordering::Relaxed) / 4,
+        },
+        tools: state.registry.list_tools_info(),
+        mcp: mcp_servers(),
+        lsp: vec![],
+        todo: serde_json::Value::Null,
+    };
+    Json(snapshot).into_response()
+}
+
+/// Registered (fake) MCP servers: `tavily` is "connected" iff its API key is
+/// present; there is no MCP host process.
+fn mcp_servers() -> Vec<McpServerInfo> {
+    if std::env::var("TAVILY_API_KEY").is_ok() {
+        vec![McpServerInfo {
+            name: "tavily".to_string(),
+            status: "connected".to_string(),
+        }]
+    } else {
+        vec![]
+    }
+}
+
+/// Current git branch, parsed straight from `.git/HEAD` — NO subprocess.
+/// `ref: refs/heads/<branch>` → branch; detached HEAD → short sha; not a
+/// repo → None.
+fn current_branch(cwd: &std::path::Path) -> Option<String> {
+    let head = std::fs::read_to_string(cwd.join(".git").join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(branch) = head.strip_prefix("ref: refs/heads/") {
+        if branch.is_empty() {
+            return None;
+        }
+        Some(branch.to_string())
+    } else if head.is_empty() {
+        None
+    } else {
+        Some(head.chars().take(7).collect())
+    }
+}
+
+// --- Tool toggle (POST /api/tools) -----------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ToolToggleBody {
+    name: String,
+    enabled: bool,
+}
+
+/// POST /api/tools `{"name": "<tool>", "enabled": bool}` — updates the
+/// (shared) registry suppression and persists it to settings.jsonc.
+async fn api_tools_toggle(
+    State(state): State<AppState>,
+    Json(body): Json<ToolToggleBody>,
+) -> Response {
+    if state.registry.get(&body.name).is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": "unknown tool"})),
+        )
+            .into_response();
+    }
+
+    state.registry.set_suppressed(&body.name, body.enabled);
+
+    let settings = Settings {
+        suppressed_tools: state.registry.suppressed_names(),
+    };
+    if let Err(e) = settings.save() {
+        warn!("failed to persist settings: {e}");
+    }
+
+    Json(serde_json::json!({"ok": true})).into_response()
+}
+
+// --- OpenAPI document ------------------------------------------------------
+
+const OPENAPI_YAML: &str = include_str!("openapi.yaml");
+
+/// GET /openapi.yaml — hand-written OpenAPI 3.1 document for the REST API.
+async fn openapi_yaml() -> Response {
+    (
+        [(
+            HeaderName::from_static("content-type"),
+            "application/yaml".to_string(),
+        )],
+        OPENAPI_YAML,
+    )
+        .into_response()
+}
+
 #[derive(serde::Deserialize)]
 struct CatchupQuery {
     after: Option<u64>,
@@ -529,7 +731,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
     .unwrap_or_else(
         |_| serde_json::json!({"_type":"ready","version":"unknown","websocket_path":"/ws"}),
     );
-    let _ = state.rollout.append_event(&ready_value);
+    let _ = state.append_event(&ready_value);
     let _ = socket.send(WsMessage::Text(ready_value.to_string())).await;
 
     // Broadcast session metadata so the browser knows the session title.
@@ -553,7 +755,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
             "created_at": now_ms(),
         })
     });
-    let _ = state.rollout.append_event(&meta_value);
+    let _ = state.append_event(&meta_value);
     let _ = socket.send(WsMessage::Text(meta_value.to_string())).await;
 
     loop {
@@ -582,7 +784,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
 
                     // Durable-first: record the client frame before acting on it.
                     if value.is_object() {
-                        let _ = state.rollout.append_event(&value);
+                        let _ = state.append_event(&value);
                     }
 
                     let client_msg: ClientMsg = match serde_json::from_value(value) {
@@ -604,7 +806,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             let pong_value =
                                 serde_json::to_value(&ServerMsg::Pong { id: id.as_deref() })
                                     .unwrap_or_else(|_| serde_json::json!({"_type":"pong"}));
-                            let _ = state.rollout.append_event(&pong_value);
+                            let _ = state.append_event(&pong_value);
                             let _ =
                                 socket.send(WsMessage::Text(pong_value.to_string())).await;
                         }
@@ -617,7 +819,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             .unwrap_or_else(|_| {
                                 serde_json::json!({"_type":"session_rename","ts":now_ms()})
                             });
-                            let _ = state.rollout.append_event(&record_value);
+                            let _ = state.append_event(&record_value);
 
                             let ack_value = serde_json::to_value(&ServerMsg::Ack {
                                 for_type: "rename",
@@ -627,7 +829,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             .unwrap_or_else(|_| {
                                 serde_json::json!({"_type":"ack","for_type":"rename","ok":true,"message":null})
                             });
-                            let _ = state.rollout.append_event(&ack_value);
+                            let _ = state.append_event(&ack_value);
                             let _ = socket
                                 .send(WsMessage::Text(ack_value.to_string()))
                                 .await;
@@ -681,7 +883,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     // Durable-first: append (raw, so the manual
                                     // payload-last field order survives on
                                     // disk), then send the same bytes.
-                                    let _ = fwd_state.rollout.append_json(&frame);
+                                    let _ = fwd_state.append_json(&frame);
                                     let _ = fwd_out.send(frame);
 
                                     // Separate full-fidelity record — never
@@ -702,7 +904,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                         Ok(json) => json,
                                         Err(_) => serde_json::json!({"_type":"tool_trace"}).to_string(),
                                     };
-                                    let _ = fwd_state.rollout.append_json(&full_json);
+                                    let _ = fwd_state.append_json(&full_json);
                                 }
                             });
 
@@ -760,7 +962,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                             serde_json::json!({"_type":"assistant","text":"(serialization error)"})
                                         });
                                         let _ =
-                                            run_state.rollout.append_event(&assistant_value);
+                                            run_state.append_event(&assistant_value);
                                         let _ = run_out.send(assistant_value.to_string());
                                     }
                                     Err(e) => {
@@ -772,7 +974,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                             serde_json::json!({"_type":"error","message":"agent error"})
                                         });
                                         let _ =
-                                            run_state.rollout.append_event(&error_value);
+                                            run_state.append_event(&error_value);
                                         let _ = run_out.send(error_value.to_string()).ok();
                                     }
                                 }
@@ -791,14 +993,42 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
 async fn send_error(state: &AppState, socket: &mut WebSocket, id: Option<&str>, message: &str) {
     let error_value = serde_json::to_value(&ServerMsg::Error { id, message })
         .unwrap_or_else(|_| serde_json::json!({"_type":"error","message":"error"}));
-    let _ = state.rollout.append_event(&error_value);
+    let _ = state.append_event(&error_value);
     let _ = socket.send(WsMessage::Text(error_value.to_string())).await;
+}
+
+/// Build the tool registry: builtins plus the Tavily-backed web tools and
+/// the fake Tavily MCP facade tools (only when an API key is available).
+/// Suppressed tool names are seeded from the persisted local settings.
+fn build_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(Calculator));
+    registry.register(Box::new(WriteFile));
+
+    // Only register the Tavily-backed web tools when an API key is available.
+    if std::env::var("TAVILY_API_KEY").is_ok() {
+        registry.register(Box::new(WebSearch::new()));
+        registry.register(Box::new(WebFetch::new()));
+        // Fake Tavily MCP facade: MCP-style tools with no MCP host process.
+        registry.register(Box::new(TavilyMcpSearch::new()));
+        registry.register(Box::new(TavilyMcpExtract::new()));
+    }
+
+    // Seed per-tool suppression from the persisted settings so a restart
+    // restores the previous on/off state.
+    let settings = Settings::load();
+    for name in &settings.suppressed_tools {
+        registry.set_suppressed(name, false);
+    }
+
+    registry
 }
 
 fn build_agent_from_config(
     config: &AppConfig,
     provider_name: &str,
     model_id: &str,
+    registry: ToolRegistry,
 ) -> anyhow::Result<Arc<Agent>> {
     let api_key = config.resolve_api_key(provider_name)?;
     let endpoint = config.endpoint(provider_name)?;
@@ -835,16 +1065,6 @@ fn build_agent_from_config(
             Box::new(OpenCodeProvider::new(api_key, endpoint.to_string(), model))
         }
     };
-
-    let mut registry = ToolRegistry::new();
-    registry.register(Box::new(Calculator));
-    registry.register(Box::new(WriteFile));
-
-    // Only register the Tavily-backed web tools when an API key is available.
-    if std::env::var("TAVILY_API_KEY").is_ok() {
-        registry.register(Box::new(WebSearch::new()));
-        registry.register(Box::new(WebFetch::new()));
-    }
 
     let system_prompt = Some(axonerai::prompt::load_system_prompt(
         &provider_name,

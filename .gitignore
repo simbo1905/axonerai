@@ -7,3 +7,4 @@ server_direct.log
 .test_dir
 .axonerai/sessions/
 .axonerai/settings.jsonc
+web/assets/*.d.ts

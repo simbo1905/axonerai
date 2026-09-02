@@ -275,7 +275,7 @@ impl AppConfig {
 
 /// Strip `//` line comments and `/* */` block comments from JSONC text,
 /// producing valid JSON. String contents are preserved.
-fn strip_jsonc_comments(input: &str) -> String {
+pub(crate) fn strip_jsonc_comments(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;

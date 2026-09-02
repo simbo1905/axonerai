@@ -1,5 +1,6 @@
 use crate::tool::Tool;
-use anyhow::{Ok, Result, anyhow};
+use crate::tools::tavily::{self, DEFAULT_MAX_RESULTS, DEFAULT_TAVILY_BASE_URL};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,10 +8,6 @@ use std::env;
 
 #[cfg(feature = "web")]
 use tracing::debug;
-
-const DEFAULT_TAVILY_BASE_URL: &str = "https://api.tavily.com";
-const DEFAULT_MAX_RESULTS: i64 = 5;
-const MAX_SNIPPET_CHARS: usize = 500;
 
 pub struct WebSearch {
     base_url: String,
@@ -84,62 +81,8 @@ impl Tool for WebSearch {
             .unwrap_or(DEFAULT_MAX_RESULTS)
             .clamp(1, 10);
 
-        let url = format!("{}/search", self.base_url.trim_end_matches('/'));
-        let response = reqwest::Client::new()
-            .post(url)
-            .bearer_auth(&api_key)
-            .json(&json!({
-                "query": input.query,
-                "search_depth": "basic",
-                "max_results": max_results
-            }))
-            .send()
-            .await?;
-
-        let status = response.status();
-        let body = response.text().await?;
-        if !status.is_success() {
-            let excerpt: String = body.chars().take(200).collect();
-            return Err(anyhow!(
-                "WebSearch request failed with status {}: {}",
-                status,
-                excerpt
-            ));
-        }
-
-        let data: Value = serde_json::from_str(&body)?;
-        format_results(&data, &input.query)
+        tavily::search(&self.base_url, &api_key, &input.query, max_results).await
     }
-}
-
-fn format_results(data: &Value, query: &str) -> Result<String> {
-    let results = data["results"]
-        .as_array()
-        .ok_or_else(|| anyhow!("Missing results in Tavily response"))?;
-
-    if results.is_empty() {
-        return Ok(format!("No results found for: {}", query));
-    }
-
-    let mut output = String::new();
-    for (index, result) in results.iter().enumerate() {
-        let title = result["title"].as_str().unwrap_or("");
-        let url = result["url"].as_str().unwrap_or("");
-        let content = result["content"].as_str().unwrap_or("");
-        let snippet: String = content.chars().take(MAX_SNIPPET_CHARS).collect();
-
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        output.push_str(&format!(
-            "{}. {}\n   {}\n   {}",
-            index + 1,
-            title,
-            url,
-            snippet
-        ));
-    }
-    Ok(output)
 }
 
 #[cfg(test)]

@@ -2,15 +2,44 @@
 import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
 import { dispatch, registerHandler } from "../dispatch.mjs";
 import { createStore } from "../store.mjs";
+import { COMMANDS, parseInput } from "../commands.mjs";
 import "./agt-status.js";
 import "./agt-chat-log.js";
 import "./agt-composer.js";
+import "./agt-panel.js";
 
 /**
  * @typedef {import("/src/wire.mjs").WireEvent} WireEvent
  * @typedef {import("/src/wire.mjs").PromptEvent} PromptEvent
  * @typedef {import("/src/wire.mjs").ChatEvent} ChatEvent
+ * @typedef {import("/src/wire.mjs").ErrorEvent} ErrorEvent
  * @typedef {import("./agt-status.js").StatusValue} StatusValue
+ * @typedef {import("./agt-panel.js").StateSnapshot} StateSnapshot
+ */
+
+/**
+ * A `session_meta` event sent by the server after the WebSocket connects.
+ * Validated by the generated web/generated/session_meta.mjs JTD validator.
+ * NOTE: wire.mjs's registry does not accept this `_type` yet (wire-layer
+ * follow-on), so the client passes these frames through pre-validated; the
+ * local typedef keeps handlers typed here without touching wire.mjs.
+ *
+ * @typedef {object} SessionMetaEvent
+ * @property {"session_meta"} _type
+ * @property {number} created_at
+ * @property {string} session_id
+ * @property {string} title
+ */
+
+/**
+ * An `ack` reply to a client control-plane frame (e.g. `rename`). Validated
+ * by the generated web/generated/ack.mjs JTD validator (same follow-on note).
+ *
+ * @typedef {object} AckEvent
+ * @property {"ack"} _type
+ * @property {string} for_type
+ * @property {string | null} message
+ * @property {boolean} ok
  */
 
 /**
@@ -37,6 +66,14 @@ export class AgtApp extends HTMLElement {
   /** @type {NonNullable<Window["AgtClient"]> | null} */
   #client = null;
   #wired = false;
+  /** @type {Readonly<StateSnapshot> | null} */
+  #snapshot = null;
+  /** Verbose UI flag (frozen wrapper; item29 renders with it). */
+  #verbose = deepFreeze({ enabled: false });
+  /** @type {string | null} */
+  #pendingRename = null;
+  /** @type {import("./agt-panel.js").AgtPanel | null} */
+  #panel = null;
 
   /** Frozen chat-state snapshot (server events + prompt records). */
   get state() {
@@ -47,9 +84,22 @@ export class AgtApp extends HTMLElement {
     return this.#status;
   }
 
+  /** Current verbose UI flag. */
+  get verbose() {
+    return this.#verbose.enabled;
+  }
+
+  /** Frozen /api/state snapshot, or null while unavailable. */
+  get snapshot() {
+    return this.#snapshot;
+  }
+
   connectedCallback() {
     if (!this.#wired) {
       this.#wired = true;
+
+      const main = document.createElement("div");
+      main.className = "agt-main";
 
       const status = document.createElement("agt-status");
       const log = document.createElement("agt-chat-log");
@@ -60,7 +110,30 @@ export class AgtApp extends HTMLElement {
           this.#sendPrompt(detail.text);
         }
       });
-      this.replaceChildren(status, log, composer);
+      composer.addEventListener("agt-command", (e) => {
+        const detail = /** @type {CustomEvent} */ (e).detail;
+        if (detail && typeof detail.rawText === "string") {
+          this.#runCommand(/** @type {{ rawText: string }} */ (detail));
+        }
+      });
+      main.replaceChildren(status, log, composer);
+
+      const panel = /** @type {import("./agt-panel.js").AgtPanel} */ (
+        document.createElement("agt-panel")
+      );
+      panel.addEventListener("agt-toggle-tool", (e) => {
+        const detail = /** @type {CustomEvent} */ (e).detail;
+        if (
+          detail &&
+          typeof detail.name === "string" &&
+          typeof detail.enabled === "boolean"
+        ) {
+          this.#toggleTool(detail.name, detail.enabled);
+        }
+      });
+      this.#panel = panel;
+
+      this.replaceChildren(main, panel);
 
       // The store drives re-renders: every append notifies, and the
       // subscription re-renders from the new frozen snapshot. #status and
@@ -80,6 +153,7 @@ export class AgtApp extends HTMLElement {
       await client.connect({
         onOpen: () => {
           this.#setStatus({ state: "connected" });
+          this.#fetchState();
         },
         onClose: () => {
           this.#setStatus({ state: "disconnected" });
@@ -126,6 +200,30 @@ export class AgtApp extends HTMLElement {
         this.#render();
       }
     });
+    registerHandler(
+      /** @type {any} */ ("session_meta"),
+      (/** @type {unknown} */ rawEvent) => {
+        const event = /** @type {SessionMetaEvent} */ (rawEvent);
+        this.#panel?.setSessionTitle(event.title);
+      },
+    );
+    registerHandler(
+      /** @type {any} */ ("ack"),
+      (/** @type {unknown} */ rawEvent) => {
+        const event = /** @type {AckEvent} */ (rawEvent);
+        if (event.for_type !== "rename") return;
+        const title = this.#pendingRename;
+        this.#pendingRename = null;
+        if (event.ok && title !== null) {
+          this.#panel?.setSessionTitle(title);
+          this.#panel?.showSlash(`renamed: ${title}`);
+          this.#fetchState();
+        } else {
+          const message = event.message ? `: ${event.message}` : "";
+          this.#panel?.showSlash(`error: rename failed${message}`);
+        }
+      },
+    );
   }
 
   /**
@@ -138,6 +236,145 @@ export class AgtApp extends HTMLElement {
   #handleEvent(event) {
     if (event === null) return;
     dispatch(event);
+  }
+
+  /**
+   * Fetch /api/state (control plane), freeze the snapshot and hand it to the
+   * panel. A 404 or network failure renders the panel's graceful
+   * "(unavailable)" state — chat keeps working without it.
+   *
+   * @returns {Promise<Readonly<StateSnapshot> | null>}
+   */
+  async #fetchState() {
+    /** @type {Readonly<StateSnapshot> | null} */
+    let snapshot = null;
+    try {
+      const res = await fetch("/api/state");
+      if (res.ok) {
+        snapshot = deepFreeze(await res.json());
+      }
+    } catch {
+      snapshot = null;
+    }
+    this.#snapshot = snapshot;
+    this.#panel?.setState(this.#snapshot);
+    return this.#snapshot;
+  }
+
+  /**
+   * Slash command control plane (never sent to the model).
+   *
+   * @param {{ rawText: string }} detail
+   */
+  async #runCommand(detail) {
+    const panel = this.#panel;
+    if (!panel) return;
+    const parsed = parseInput(detail.rawText);
+    if (parsed.kind !== "command") return;
+
+    if (parsed.error === "empty") {
+      panel.showSlash("error: empty command — type / for the command list");
+      return;
+    }
+    if (parsed.error === "unknown") {
+      panel.showSlash(`error: unknown command '/${parsed.name}' — try /help`);
+      return;
+    }
+    if (parsed.error === "missing-args") {
+      panel.showSlash(`usage: /${parsed.name} <title>`);
+      return;
+    }
+
+    switch (parsed.name) {
+      case "model": {
+        const snapshot = this.#snapshot ?? (await this.#fetchState());
+        if (!snapshot) {
+          panel.showSlash("error: /api/state unavailable");
+          return;
+        }
+        panel.showSlash(
+          `model: ${snapshot.model} (provider: ${snapshot.provider})`,
+        );
+        return;
+      }
+      case "built-ins": {
+        if (!this.#snapshot) await this.#fetchState();
+        panel.showSlash("built-ins: opened the Built-ins tree");
+        panel.openBuiltins();
+        return;
+      }
+      case "verbose": {
+        this.#verbose = deepFreeze({ enabled: !this.#verbose.enabled });
+        window.dispatchEvent(
+          new CustomEvent("agt-verbose-changed", {
+            detail: { verbose: this.#verbose.enabled },
+          }),
+        );
+        panel.showSlash(`verbose: ${this.#verbose.enabled ? "on" : "off"}`);
+        return;
+      }
+      case "rename": {
+        const client = this.#client;
+        if (!client || this.#status.state !== "connected") {
+          panel.showSlash("error: not connected — cannot rename");
+          return;
+        }
+        if (typeof client.sendRename !== "function") {
+          panel.showSlash("error: client does not support rename");
+          return;
+        }
+        this.#pendingRename = parsed.args;
+        try {
+          await client.sendRename(parsed.args);
+        } catch (error) {
+          this.#pendingRename = null;
+          panel.showSlash(
+            `error: rename failed — ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        return;
+      }
+      case "help": {
+        panel.showSlash(
+          COMMANDS.map(
+            (command) => `/${command.name} — ${command.description}`,
+          ).join("\n"),
+        );
+        return;
+      }
+      default:
+        panel.showSlash(`error: unhandled command '/${parsed.name}'`);
+    }
+  }
+
+  /**
+   * Flip a tool: POST /api/tools, then refetch /api/state so the panel row
+   * converges with the server (reverting the optimistic update on failure).
+   *
+   * @param {string} name
+   * @param {boolean} enabled
+   */
+  async #toggleTool(name, enabled) {
+    const panel = this.#panel;
+    try {
+      const res = await fetch("/api/tools", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, enabled }),
+      });
+      if (!res.ok) {
+        throw new Error(`POST /api/tools failed (${res.status})`);
+      }
+    } catch (error) {
+      panel?.showSlash(
+        `error: toggle ${name} failed — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    await this.#fetchState();
   }
 
   /**
@@ -216,6 +453,8 @@ export class AgtApp extends HTMLElement {
       composer.disabled =
         this.#pending.size > 0 || this.#status.state !== "connected";
     }
+
+    if (this.#panel) this.#panel.setState(this.#snapshot);
   }
 }
 
