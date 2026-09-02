@@ -1,0 +1,81 @@
+# promptfoo eval config for the 7-config provider x model matrix.
+# Run from the repo root: promptfoo eval -c evals/promptfooconfig.yaml --no-share
+description: agt provider x model matrix eval
+
+prompts:
+  # Paths are resolved relative to this config file's directory.
+  - file://task.txt
+
+# Each provider entry is a local axoner-web WebSocket server on 127.0.0.1:<port>.
+providers:
+  - id: file://agt-provider.mjs
+    config:
+      port: 9501
+      label: groq--qwen_qwen3.8-27b
+  - id: file://agt-provider.mjs
+    config:
+      port: 9502
+      label: groq--openai_gpt-oss-20b
+  - id: file://agt-provider.mjs
+    config:
+      port: 9503
+      label: groq--openai_gpt-oss-120b
+  - id: file://agt-provider.mjs
+    config:
+      port: 9504
+      label: mistral--zai-glm-5-2
+  - id: file://agt-provider.mjs
+    config:
+      port: 9505
+      label: mistral--mistral-medium-latest
+  - id: file://agt-provider.mjs
+    config:
+      port: 9506
+      label: opencode-zen--glm-5.2
+  - id: file://agt-provider.mjs
+    config:
+      port: 9507
+      label: opencode-go--glm-5.2
+
+maxConcurrency: 1
+
+defaultTest:
+  options: {}
+
+tests:
+  - description: calculator
+    vars:
+      task: Use the Calculator tool to compute 17*23 and tell me the result.
+    assert:
+      - type: contains
+        value: "391"
+
+  - description: websearch
+    vars:
+      task: Use the WebSearch tool to search the web for 'Tavily API' and report the URL of the top result.
+    assert:
+      - type: icontains
+        value: tavily
+      - type: regex
+        value: https?://
+
+  - description: webfetch
+    vars:
+      task: Use the WebFetch tool to fetch https://example.com and tell me the page's main heading.
+    assert:
+      - type: icontains
+        value: example domain
+
+  - description: chained search+fetch
+    vars:
+      task: Use WebSearch to find the Rust programming language website, then use WebFetch on the top result, and tell me the site's tagline.
+    assert:
+      - type: javascript
+        value: /rust/i.test(output) && output.length > 30
+
+  - description: no-tool arithmetic
+    vars:
+      task: What is 2 + 2? Answer with just the number.
+    assert:
+      - type: javascript
+        value: /\b4\b/.test(output)

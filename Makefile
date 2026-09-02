@@ -5,7 +5,7 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs
+.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals
 
 # Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
 # Must run before `cargo build`: src/prompt.rs embeds
@@ -59,3 +59,23 @@ serve-status:
 
 serve-logs:
 	@tooling/serve.lua logs $(PROVIDER) $(MODEL) $(PORT)
+
+AGT_SERVER := target/release/examples/axoner-web
+
+# Run the promptfoo eval matrix: build + compose prompts, start all 7
+# provider--model servers on ports 9501-9507, run evals/promptfooconfig.yaml,
+# stop the servers, and print a per-provider summary. Exits non-zero if any
+# config has a failing test.
+evals: build-server prompts
+	@test -x $(AGT_SERVER) || { echo "ERROR: server binary missing: $(AGT_SERVER)"; exit 1; }
+	@mkdir -p .tmp/evals
+	@tooling/serve.lua up groq qwen/qwen3.8-27b 9501
+	@tooling/serve.lua up groq openai/gpt-oss-20b 9502
+	@tooling/serve.lua up groq openai/gpt-oss-120b 9503
+	@tooling/serve.lua up mistral zai-glm-5-2 9504
+	@tooling/serve.lua up mistral mistral-medium-latest 9505
+	@tooling/serve.lua up opencode-zen glm-5.2 9506
+	@tooling/serve.lua up opencode-go glm-5.2 9507
+	@promptfoo eval -c evals/promptfooconfig.yaml --no-share -j 1 --output .tmp/evals/results.json || true
+	@tooling/serve.lua down all
+	@node evals/summarize.mjs .tmp/evals/results.json
