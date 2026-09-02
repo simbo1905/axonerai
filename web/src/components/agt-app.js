@@ -213,7 +213,11 @@ export class AgtApp extends HTMLElement {
       }
       if (records.length > 0) {
         this.#store.appendAll(records.map((record) => record.event));
-        await appendEvents(db, sessionId, records);
+        // Fire-and-forget: the store already holds the frames, so #boot must
+        // never block on (or fail with) the history spool write.
+        appendEvents(db, sessionId, records).catch((error) =>
+          console.warn("[history] append failed", error),
+        );
       }
     } catch (error) {
       console.warn("[catchup] failed", error);

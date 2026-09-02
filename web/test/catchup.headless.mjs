@@ -1,5 +1,9 @@
 // @ts-check
-// Headless ?s=<uuid> catch-up test over the line protocol (item29).
+// Headless ?s=<uuid> catch-up test over the line protocol (item29/item30).
+//
+// NOTE: the runner URL MUST carry ?s=<uuid> (e.g.
+// /test/catchup-runner.html?s=01890a5d-ac96-774b-bcce-b302099a8057) — the app
+// only runs the catch-up path when ?s= is present.
 //
 // Runs in Chrome against a served tree in TWO page runs (separated by a
 // real reload; the run number lives in sessionStorage):
@@ -11,10 +15,14 @@
 //           bytes/duration, expanding shows the pretty payload with the
 //           abridged truncation), and live events advance the frontier;
 //           then reloads.
-//   run 2 — the stub serves only a NEWER frame (ts = after + 1, where
-//           after is the IndexedDB frontier the client requested); asserts
-//           the frontier was respected (old frames NOT re-fetched, no
-//           duplicates).
+//   run 2 — item30 design: the local IndexedDB log IS replayed into the
+//           store before catching up, so the old frames are present exactly
+//           ONCE (from the local replay). The stub serves only a NEWER frame
+//           (ts = after + 1, where after is the IDB frontier the client
+//           requested); asserts the frontier was respected (requestedAfter
+//           > 1e12, the stub never re-serves the old frames), status reaches
+//           connected, and live events from this run's connect appear
+//           alongside the replayed run-1 records.
 // window.fetch and window.AgtClient are stubbed BEFORE the app is imported.
 // Results land on window.__CATCHUP_TEST_RESULTS__; document.title becomes
 // "catchup-tests-done-1" / "catchup-tests-done-2".
@@ -161,6 +169,10 @@ const realFetch = window.fetch.bind(window);
 /** @type {number | null} */
 let requestedAfter = null;
 
+/** Every frame ts the stub served during this page run (frontier proof). */
+/** @type {number[]} */
+const servedTs = [];
+
 window.fetch = /** @type {typeof window.fetch} */ (
   async (input, init) => {
     const url =
@@ -176,6 +188,9 @@ window.fetch = /** @type {typeof window.fetch} */ (
       const after = Number(match[1]);
       requestedAfter = after;
       if (after === 0) {
+        // The canned body's frames: assistant(1000), tool_call(1001),
+        // tool_call(1002).
+        servedTs.push(1000, 1001, 1002);
         return new Response(cannedBody(), {
           status: 200,
           headers: { "Content-Type": "application/x-rollout-line" },
@@ -183,6 +198,7 @@ window.fetch = /** @type {typeof window.fetch} */ (
       }
       // Frontier respected: only frames strictly newer than the requested
       // high-watermark, i.e. here exactly one synthetic newer frame.
+      servedTs.push(after + 1);
       const newer = `${after + 1}\0assistant\0${JSON.stringify({
         _type: "assistant",
         id: "req_new",
@@ -219,7 +235,11 @@ function emit(frame) {
 window.AgtClient = {
   async connect(/** @type {any} */ opts) {
     onEvent = opts.onEvent ?? null;
-    captured.onOpen();
+    // Like the real client.mjs: fire the app's onOpen BEFORE delivering
+    // events, so the status pill leaves "Connecting…" and the composer
+    // enables (regression guard: a stub that never calls onOpen leaves the
+    // pill stuck at Connecting… forever).
+    opts.onOpen?.();
     await tick();
     emit({
       _type: "ready",
@@ -240,13 +260,6 @@ window.AgtClient = {
     return "ok";
   },
   dispose() {},
-};
-
-/** @type {{ onOpen: () => void, onClose: () => void, onError: (e: Event) => void }} */
-let captured = {
-  onOpen: () => {},
-  onClose: () => {},
-  onError: () => {},
 };
 
 // ------------------------------------------------------------- helpers
@@ -421,10 +434,20 @@ if (run === 1) {
   });
 
   await test("history frontier advanced past the live stamps (reloaded catch-up gets only newer)", async () => {
-    // The live ready + assistant events were stamped Date.now() and
-    // persisted; wait for the IDB writes to settle via a microtask drain.
-    await tick();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The catch-up spool write is fire-and-forget (item31: #boot must never
+    // block on IndexedDB), so deterministically wait for the canned catch-up
+    // records to land in IDB — the reload must not cancel the transaction.
+    const { openHistory, getAll } = await import("/src/history.mjs");
+    const deadline = Date.now() + 2000;
+    for (;;) {
+      const db = await openHistory();
+      const records = await getAll(db, SESSION);
+      if (records.filter((r) => r.ts <= 1002).length === 3) break;
+      if (Date.now() > deadline) {
+        throw new Error("catch-up records not persisted to IDB before reload");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     // Persist this run's results through the reload, then trigger it.
     localStorage.setItem(
       "catchup-run1-results",
@@ -437,24 +460,40 @@ if (run === 1) {
   // ----------------------------------------------------------------- run 2
   await import("/src/components/agt-app.js");
 
-  await test("reload respects the frontier: only newer frames replay, no duplicates", async () => {
+  await test("reload respects the frontier: local replay once, only newer frames re-fetched", async () => {
     await waitFor(
       () => stateTexts("post-reload replay").length === 1,
       "newer frame caught up after reload",
     );
+    // item30 design: the local IndexedDB log IS replayed before catching up,
+    // so the old catch-up frame appears exactly once — from the local
+    // replay, not from the network.
     assertEqual(
       stateTexts("hello from history").length,
-      0,
-      "old catch-up frame must NOT be re-fetched (frontier respected)",
+      1,
+      "old catch-up frame present exactly once (local replay)",
     );
     assert(
       /** @type {number} */ (requestedAfter) > 1_000_000_000_000,
       `frontier request carried the IDB high-watermark (got ${requestedAfter})`,
     );
+    // Frontier proof: the stub never re-served the old frames — everything
+    // it served this run is newer than the IDB stamp magnitude (old frames
+    // are ts 1000-1002).
+    assert(
+      servedTs.length > 0 && servedTs.every((ts) => ts > 1_000_000_000_000),
+      `stub must never re-serve old frames (served ${JSON.stringify(servedTs)})`,
+    );
     assertEqual(
       stateTexts("live reply").length,
-      1,
-      "live reply present exactly once (from this run's connect)",
+      2,
+      "live reply twice: run-1 record replayed from history + this run's connect",
+    );
+    // Regression guard (item31): #catchUp must never block #boot — the pill
+    // has to reach connected after the catch-up completes.
+    await waitFor(
+      () => /** @type {any} */ (appEl()).status.state === "connected",
+      "status pill reaches connected after catch-up",
     );
     assertEqual(toolLines().length, 0, "no tool lines without tool frames");
   });
