@@ -48,3 +48,17 @@ export function formatBytes(n) {
   const text = value < 10 ? value.toFixed(1) : String(Math.round(value));
   return `${text}${units[unit]}`;
 }
+
+/**
+ * Format a unix-epoch millisecond timestamp as a local 24-hour wall clock
+ * `hh:mm:ss`. Non-finite input renders as `--:--:--`.
+ *
+ * @param {number} ms unix epoch milliseconds
+ * @returns {string} `hh:mm:ss` (zero-padded, local time)
+ */
+export function formatClock(ms) {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "--:--:--";
+  const pad = (/** @type {number} */ n) => String(n).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}

@@ -3,8 +3,7 @@
 //   - window.AgtClient.connect({ onOpen, onClose, onError, onEvent })
 //   - window.AgtClient.sendPrompt(text, id?) -> Promise<string>
 
-import { parseWireEventText, deepFreeze } from "/src/wire.mjs";
-import { validateAck, validateSession_meta } from "/generated/validators.mjs";
+import { parseWireEventText } from "/src/wire.mjs";
 
 const WS_PATH = "/ws";
 
@@ -47,25 +46,10 @@ async function connect({ onOpen, onClose, onError, onEvent } = {}) {
 
   socket.onmessage = (ev) => {
     // Validate + deep-freeze every incoming frame before any handling.
-    // Dropped (null) frames are already logged by wire.mjs.
-    let msg = parseWireEventText(ev.data);
-    // ack/session_meta are not yet in wire.mjs's validator registry (wire
-    // layer follow-on); validate them here against the same generated JTD
-    // validators so the UI still receives typed frozen events.
-    if (msg === null) {
-      let raw = null;
-      try {
-        raw = JSON.parse(ev.data);
-      } catch (_) {
-        return;
-      }
-      const type = raw !== null && typeof raw === "object" ? raw._type : undefined;
-      if (type === "ack") {
-        if (validateAck(raw).length === 0) msg = deepFreeze(raw);
-      } else if (type === "session_meta") {
-        if (validateSession_meta(raw).length === 0) msg = deepFreeze(raw);
-      }
-    }
+    // Dropped (null) frames are already logged by wire.mjs, which owns the
+    // full validator registry (ready/pong/assistant/error/ack/session_meta/
+    // tool_call).
+    const msg = parseWireEventText(ev.data);
     if (msg === null) {
       return;
     }

@@ -57,6 +57,13 @@ declare global {
       fail: number;
       details: Array<{ name: string; ok: boolean; error?: string }>;
     };
+    /** Headless ?s= catch-up results (catchup.headless.mjs). */
+    __CATCHUP_TEST_RESULTS__?: {
+      pass: number;
+      fail: number;
+      details: Array<{ name: string; ok: boolean; error?: string }>;
+      run: number;
+    };
     __UI_STUB__?: {
       handlers: {
         onOpen(): void;

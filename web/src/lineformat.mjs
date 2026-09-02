@@ -13,6 +13,7 @@
  * @typedef {import("/assets/lineformat.js").default} WasmInit
  * @typedef {(line: string, max: number) => any} WasmParseLine
  * @typedef {(line: string) => boolean} WasmIsValid
+ * @typedef {(text: string) => any} WasmExtractToolCallMeta
  */
 
 /**
@@ -27,10 +28,25 @@
  * truncation rule is deterministic: strict JSON parse failure ⇒ partial.
  */
 
-/** @type {Promise<{ parse_line: WasmParseLine, is_valid: WasmIsValid }> | null} */
+/**
+ * Lenient metadata extracted from a (possibly truncated) `tool_call` event
+ * payload, mirroring the Rust `ToolCallMeta`. `*_pretty_head` carry the raw
+ * (possibly cut) payload string contents up to the cut.
+ *
+ * @typedef {Object} ToolCallMeta
+ * @property {string} tool
+ * @property {number} duration_ms
+ * @property {number} bytes_up
+ * @property {number} bytes_down
+ * @property {number} ts
+ * @property {string} args_pretty_head
+ * @property {string} result_pretty_head
+ */
+
+/** @type {Promise<{ parse_line: WasmParseLine, is_valid: WasmIsValid, extract_tool_call_meta: WasmExtractToolCallMeta }> | null} */
 let initPromise = null;
 
-/** @type {{ parse_line: WasmParseLine, is_valid: WasmIsValid } | null} */
+/** @type {{ parse_line: WasmParseLine, is_valid: WasmIsValid, extract_tool_call_meta: WasmExtractToolCallMeta } | null} */
 let glue = null;
 
 /**
@@ -39,11 +55,11 @@ let glue = null;
  * `lineformat_bg.wasm`. Safe to call repeatedly; every caller gets the same
  * promise.
  *
- * @returns {Promise<{ parse_line: WasmParseLine, is_valid: WasmIsValid }>} the initialised glue module
+ * @returns {Promise<{ parse_line: WasmParseLine, is_valid: WasmIsValid, extract_tool_call_meta: WasmExtractToolCallMeta }>} the initialised glue module
  */
 export function initLineformat() {
   if (!initPromise) {
-    initPromise = /** @type {Promise<{ parse_line: WasmParseLine, is_valid: WasmIsValid }>} */ (
+    initPromise = /** @type {Promise<{ parse_line: WasmParseLine, is_valid: WasmIsValid, extract_tool_call_meta: WasmExtractToolCallMeta }>} */ (
       import("/assets/lineformat.js").then(async (/** @type {any} */ mod) => {
         await mod.default();
         glue = mod;
@@ -77,15 +93,71 @@ export async function parseWireLine(line, maxBytes = 1024) {
   }
   try {
     /** @type {any} */
-    const frame = glue.parse_line(line, maxBytes);
+    let raw = glue.parse_line(line, maxBytes);
+    let text = String(raw.text);
+    // The item26.5 catch-up stream emits three-part lines
+    // `ts\0type\0text\n` (the `_type` segment precedes the JSON payload,
+    // which the server already egress-truncated at 1024 bytes). A JSON
+    // payload always starts with `{`, so a leading `<type>\0` segment is
+    // unambiguous. Re-parse with the extra segment budgeted so the payload
+    // cut still honours `maxBytes` exactly.
+    const sep = text.indexOf("\0");
+    if (sep > 0 && text.slice(0, sep) === String(raw.type)) {
+      const extra = sep + 1;
+      raw = glue.parse_line(line, maxBytes + extra);
+      text = String(raw.text).slice(extra);
+      if (text.length > maxBytes) {
+        text = text.slice(0, maxBytes);
+      }
+    }
     /** @type {WireFrame} */
     return {
-      ts: Number(frame.ts),
-      type: String(frame.type),
-      text: String(frame.text),
-      truncated: Boolean(frame.truncated),
+      ts: Number(raw.ts),
+      type: String(raw.type),
+      text,
+      truncated: Boolean(raw.truncated),
     };
   } catch (error) {
     throw new Error(`corrupt wire line: ${String(error)}`);
   }
+}
+
+/**
+ * Leniently extract the metadata of a (possibly truncated) `tool_call` event
+ * payload — the shared Rust/WASM scan (see
+ * `wasm/lineformat/src/lib.rs::extract_tool_call_meta`). Metadata fields
+ * serialize before the payload, so they are complete on an egress-truncated
+ * line; the `*_pretty_head` fields carry the raw (possibly cut) payload
+ * string contents.
+ *
+ * @param {string} text the (possibly truncated) tool_call JSON payload
+ * @returns {Promise<ToolCallMeta | null>} null when the metadata is missing
+ * @throws {Error} if the WASM module was not initialised via
+ * {@link initLineformat}
+ */
+export async function extractToolCallMeta(text) {
+  if (!glue) {
+    if (initPromise) {
+      glue = await initPromise;
+    } else {
+      throw new Error(
+        "lineformat not initialised: await initLineformat() before calling extractToolCallMeta()",
+      );
+    }
+  }
+  /** @type {any} */
+  const meta = glue.extract_tool_call_meta(text);
+  if (meta === null || meta === undefined) {
+    return null;
+  }
+  /** @type {ToolCallMeta} */
+  return {
+    tool: String(meta.tool),
+    duration_ms: Number(meta.duration_ms),
+    bytes_up: Number(meta.bytes_up),
+    bytes_down: Number(meta.bytes_down),
+    ts: Number(meta.ts),
+    args_pretty_head: String(meta.args_pretty_head),
+    result_pretty_head: String(meta.result_pretty_head),
+  };
 }

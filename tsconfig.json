@@ -17,6 +17,8 @@
       "*/src/pretty.mjs": ["./web/src/pretty.mjs"],
       "/src/lineformat.mjs": ["./web/src/lineformat.mjs"],
       "*/src/lineformat.mjs": ["./web/src/lineformat.mjs"],
+      "/src/history.mjs": ["./web/src/history.mjs"],
+      "*/src/history.mjs": ["./web/src/history.mjs"],
       "/assets/pretty-json.js": ["./web/types/pretty-json-glue.d.ts"],
       "*/assets/pretty-json.js": ["./web/types/pretty-json-glue.d.ts"],
       "/assets/lineformat.js": ["./web/types/lineformat-glue.d.ts"],

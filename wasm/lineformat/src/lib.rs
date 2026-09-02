@@ -92,6 +92,94 @@ pub fn extract_type(json: &str) -> &str {
     rest
 }
 
+/// Lenient metadata extracted from a (possibly truncated) `tool_call` event
+/// JSON payload. `*_pretty_head` fields carry the raw (possibly cut) string
+/// contents of the payload fields; the payload fields serialize LAST so the
+/// metadata is complete whenever the payload was egress-truncated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallMeta {
+    pub tool: String,
+    pub duration_ms: u64,
+    pub bytes_up: u64,
+    pub bytes_down: u64,
+    pub ts: u64,
+    pub args_pretty_head: String,
+    pub result_pretty_head: String,
+}
+
+/// Scan for the raw contents of a JSON string field `"key":"..."` — no JSON
+/// parse. The value runs up to the first unescaped closing quote, or to
+/// end-of-text when the payload was truncated mid-value (best effort). The
+/// closing quote itself is never included. Returns `None` when the
+/// `"key":"` literal is not present.
+fn scan_string_field(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", key);
+    let start = json.find(&needle)? + needle.len();
+    let rest = &json[start..];
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in rest.chars() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            out.push(c);
+            escaped = true;
+        } else if c == '"' {
+            break;
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out)
+}
+
+/// Scan for a `u64` JSON field `"key":<digits>` — no JSON parse. Returns
+/// `None` when the `"key":` literal is absent or no ASCII digits follow it
+/// (a truncated digit run yields the digits visible so far).
+fn scan_u64_field(json: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{}\":", key);
+    let start = json.find(&needle)? + needle.len();
+    let rest = &json[start..];
+    let digits = rest
+        .bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if digits == 0 {
+        return None;
+    }
+    rest[..digits].parse::<u64>().ok()
+}
+
+/// Leniently extract the metadata of a `tool_call` event from a (possibly
+/// truncated) JSON payload — no JSON parse, a literal scan like
+/// [`extract_type`]. The metadata fields (`tool`, `duration_ms`, `bytes_up`,
+/// `bytes_down`, `ts`) serialize BEFORE the payload strings, so they are
+/// complete on an egress-truncated line; `*_pretty_head` carry the raw
+/// (possibly cut) payload string contents up to the cut. Missing metadata
+/// fields (or a cut `"_type":"tool_call"` tag) → `None`.
+pub fn extract_tool_call_meta(text: &str) -> Option<ToolCallMeta> {
+    if extract_type(text) != "tool_call" {
+        return None;
+    }
+    let tool = scan_string_field(text, "tool")?;
+    let duration_ms = scan_u64_field(text, "duration_ms")?;
+    let bytes_up = scan_u64_field(text, "bytes_up")?;
+    let bytes_down = scan_u64_field(text, "bytes_down")?;
+    let ts = scan_u64_field(text, "ts")?;
+    let args_pretty_head = scan_string_field(text, "args_pretty").unwrap_or_default();
+    let result_pretty_head = scan_string_field(text, "result_pretty").unwrap_or_default();
+    Some(ToolCallMeta {
+        tool,
+        duration_ms,
+        bytes_up,
+        bytes_down,
+        ts,
+        args_pretty_head,
+        result_pretty_head,
+    })
+}
+
 /// Char-boundary-safe cut of a payload to at most `max_bytes` bytes. Returns
 /// the (possibly cut) text and whether it was truncated. Never splits a
 /// multi-byte UTF-8 codepoint.
@@ -150,6 +238,30 @@ mod wasm_exports {
     #[wasm_bindgen]
     pub fn is_valid(line: &str) -> bool {
         ts_prefix(line).is_ok()
+    }
+
+    /// Lenient metadata extraction from a (possibly truncated) `tool_call`
+    /// payload: `{ tool, duration_ms, bytes_up, bytes_down, ts,
+    /// args_pretty_head, result_pretty_head }`, or `null` when the metadata
+    /// fields are missing.
+    #[wasm_bindgen]
+    pub fn extract_tool_call_meta(text: &str) -> JsValue {
+        let meta = match super::extract_tool_call_meta(text) {
+            Some(meta) => meta,
+            None => return JsValue::NULL,
+        };
+        let obj = js_sys::Object::new();
+        let set = |key: &str, value: JsValue| {
+            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(key), &value);
+        };
+        set("tool", JsValue::from_str(&meta.tool));
+        set("duration_ms", JsValue::from_f64(meta.duration_ms as f64));
+        set("bytes_up", JsValue::from_f64(meta.bytes_up as f64));
+        set("bytes_down", JsValue::from_f64(meta.bytes_down as f64));
+        set("ts", JsValue::from_f64(meta.ts as f64));
+        set("args_pretty_head", JsValue::from_str(&meta.args_pretty_head));
+        set("result_pretty_head", JsValue::from_str(&meta.result_pretty_head));
+        obj.into()
     }
 }
 

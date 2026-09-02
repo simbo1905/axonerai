@@ -225,3 +225,245 @@ fn split_truncation_does_not_split_codepoint() {
     let payload = line.split_once('\0').unwrap().1;
     assert!(payload.starts_with(frame.text.as_str()));
 }
+
+// ---------------------------------------------------------------------------
+// extract_tool_call_meta — lenient scan over a (truncated) tool_call payload
+// ---------------------------------------------------------------------------
+
+use super::extract_tool_call_meta;
+
+/// A realistic `tool_call` serialization in the exact byte order the server
+/// writes (metadata first, payload LAST — see `src/wire.rs`
+/// `tool_call_serializes_metadata_before_payload`). Built by concatenating
+/// known parts so expected field positions are known by construction.
+struct Fixture {
+    full: String,
+    args_val: String,
+    result_val: String,
+    /// Byte offset of the first digit of the `ts` value (the LAST mandatory
+    /// metadata field).
+    ts_digits_start: usize,
+    /// Byte offset just past the last `ts` digit (metadata fully visible).
+    ts_digits_end: usize,
+    args_val_start: usize,
+    args_val_end: usize,
+    result_val_start: usize,
+    result_val_end: usize,
+}
+
+fn fixture() -> Fixture {
+    // Payload contents full of escaped quotes — adversarial for the string
+    // scanner. Pure ASCII so byte offsets == char offsets.
+    let args_val =
+        "{\"query\":\"axonerai rollout wasm\",\"max_results\":5,\"deep\":{\"n\":1}}"
+            .replace('"', "\\\"");
+    let result_val =
+        "{\"results\":[{\"title\":\"page one\",\"url\":\"https://example.test/a\"},{\"title\":\"page two\"}],\"took_ms\":42}"
+            .replace('"', "\\\"");
+    let head = format!(
+        "{{\"_type\":\"tool_call\",\"id\":null,\"session_id\":\"01890a5d-ac96-774b-bcce-b302099a8057\",\"tool\":\"WebSearch\",\"bytes_up\":120,\"bytes_down\":4567,\"duration_ms\":8123,\"ts\":{}",
+        1717238400123u64
+    );
+    let args_open = "\"args_pretty\":\"";
+    let args_close = "\",";
+    let result_open = "\"result_pretty\":\"";
+    let result_close = "\"}";
+    let args_val_start = head.len() + args_open.len();
+    let args_val_end = args_val_start + args_val.len();
+    let result_val_start = args_val_end + args_close.len() + result_open.len();
+    let result_val_end = result_val_start + result_val.len();
+    let full = format!(
+        "{head}{args_open}{args_val}{args_close}{result_open}{result_val}{result_close}"
+    );
+    let ts_digits_start = full.find("1717238400123").expect("ts digits in fixture");
+    Fixture {
+        ts_digits_end: ts_digits_start + "1717238400123".len(),
+        ts_digits_start,
+        args_val_start,
+        args_val_end,
+        result_val_start,
+        result_val_end,
+        args_val,
+        result_val,
+        full,
+    }
+}
+
+/// Independently derived expected head for a payload string whose raw
+/// contents start at `start` and end (last content char) at `end - 1`.
+fn expected_head(val: &str, start: usize, end: usize, cut: usize) -> String {
+    if cut <= start {
+        String::new()
+    } else {
+        val[..(cut - start).min(val.len())].to_string()
+    }
+}
+
+/// A head must never end with an UNESCAPED quote: the only way a `"` can be
+/// the last visible char of a cut value is as an escaped content quote (`\"`).
+/// An unescaped one would be the field's closing quote, which the scanner
+/// must consume — never emit.
+fn assert_no_tail_quote(head: &str, cut: usize) {
+    if head.ends_with('"') {
+        assert!(
+            head.ends_with("\\\""),
+            "head at cut {cut} ends with an unterminated tail quote: {head:?}"
+        );
+    }
+}
+
+#[test]
+fn extract_tool_call_meta_reads_full_payload() {
+    let f = fixture();
+    let meta = extract_tool_call_meta(&f.full).expect("full payload must parse");
+    assert_eq!(meta.tool, "WebSearch");
+    assert_eq!(meta.duration_ms, 8123);
+    assert_eq!(meta.bytes_up, 120);
+    assert_eq!(meta.bytes_down, 4567);
+    assert_eq!(meta.ts, 1_717_238_400_123);
+    assert_eq!(meta.args_pretty_head, f.args_val, "args head is the raw contents");
+    assert_eq!(
+        meta.result_pretty_head, f.result_val,
+        "result head is the raw contents"
+    );
+}
+
+#[test]
+fn extract_tool_call_meta_truncated_at_every_64_bytes() {
+    let f = fixture();
+    let len = f.full.len();
+    let mut cut = 64usize;
+    while cut < len {
+        let text = &f.full[..cut];
+        let meta = extract_tool_call_meta(text);
+        if cut <= f.ts_digits_start {
+            // The last mandatory metadata field (ts) has no digit visible
+            // yet — metadata is incomplete, so the scan must refuse.
+            assert!(
+                meta.is_none(),
+                "cut {cut} has incomplete metadata, expected None"
+            );
+        } else {
+            let expected_ts_digits = (cut - f.ts_digits_start).min(13);
+            let meta = meta.expect("cut past ts start must extract (leniently)");
+            assert_eq!(meta.tool, "WebSearch", "tool at cut {cut}");
+            assert_eq!(meta.bytes_up, 120, "bytes_up at cut {cut}");
+            assert_eq!(meta.bytes_down, 4567, "bytes_down at cut {cut}");
+            assert_eq!(meta.duration_ms, 8123, "duration_ms at cut {cut}");
+            if expected_ts_digits == 13 {
+                assert_eq!(meta.ts, 1_717_238_400_123, "ts at cut {cut}");
+            } else {
+                let expected_ts: u64 = f.full[f.ts_digits_start..f.ts_digits_start + expected_ts_digits]
+                    .parse()
+                    .expect("digit prefix parses");
+                assert_eq!(meta.ts, expected_ts, "ts digit prefix at cut {cut}");
+            }
+            assert!(
+                f.args_val.starts_with(&meta.args_pretty_head),
+                "args head must be a prefix of the raw contents (cut {cut})"
+            );
+            assert!(
+                f.result_val.starts_with(&meta.result_pretty_head),
+                "result head must be a prefix of the raw contents (cut {cut})"
+            );
+            assert_eq!(
+                meta.args_pretty_head,
+                expected_head(&f.args_val, f.args_val_start, f.args_val_end, cut),
+                "args head at cut {cut}"
+            );
+            assert_eq!(
+                meta.result_pretty_head,
+                expected_head(&f.result_val, f.result_val_start, f.result_val_end, cut),
+                "result head at cut {cut}"
+            );
+            assert_no_tail_quote(&meta.args_pretty_head, cut);
+            assert_no_tail_quote(&meta.result_pretty_head, cut);
+        }
+        cut += 64;
+    }
+}
+
+#[test]
+fn extract_tool_call_meta_dense_sweep_over_metadata_region() {
+    // Step 1 over every byte of the metadata region plus the start of the
+    // payload: Some/None transitions and lenient digit prefixes are exact.
+    let f = fixture();
+    let sweep_end = f.args_val_start + 8;
+    for cut in 0..=sweep_end {
+        let text = &f.full[..cut];
+        let meta = extract_tool_call_meta(text);
+        if cut <= f.ts_digits_start {
+            assert!(meta.is_none(), "cut {cut} incomplete metadata, expected None");
+            continue;
+        }
+        let expected_ts_digits = (cut - f.ts_digits_start).min(13);
+        let meta = meta.unwrap_or_else(|| panic!("cut {cut} must extract"));
+        assert_eq!(meta.tool, "WebSearch", "tool at cut {cut}");
+        assert_eq!(meta.duration_ms, 8123, "duration_ms at cut {cut}");
+        if expected_ts_digits == 13 {
+            assert_eq!(meta.ts, 1_717_238_400_123, "ts at cut {cut}");
+        } else {
+            let expected_ts: u64 = f.full[f.ts_digits_start..f.ts_digits_start + expected_ts_digits]
+                .parse()
+                .unwrap();
+            assert_eq!(meta.ts, expected_ts, "ts digit prefix at cut {cut}");
+        }
+        assert_eq!(
+            meta.args_pretty_head,
+            expected_head(&f.args_val, f.args_val_start, f.args_val_end, cut),
+            "args head at cut {cut}"
+        );
+        assert_no_tail_quote(&meta.args_pretty_head, cut);
+    }
+}
+
+#[test]
+fn extract_tool_call_meta_rejects_missing_metadata() {
+    // Not a tool_call at all.
+    assert!(extract_tool_call_meta(r#"{"_type":"assistant","text":"hi"}"#).is_none());
+    assert!(extract_tool_call_meta("").is_none());
+    // tool_call tag but missing each mandatory metadata field in turn.
+    assert!(extract_tool_call_meta(r#"{"_type":"tool_call"}"#).is_none());
+    assert!(
+        extract_tool_call_meta(
+            r#"{"_type":"tool_call","duration_ms":1,"bytes_up":2,"bytes_down":3,"ts":4}"#
+        )
+        .is_none(),
+        "missing tool must be None"
+    );
+    assert!(
+        extract_tool_call_meta(
+            r#"{"_type":"tool_call","tool":"t","bytes_up":2,"bytes_down":3,"ts":4}"#
+        )
+        .is_none(),
+        "missing duration_ms must be None"
+    );
+    assert!(
+        extract_tool_call_meta(
+            r#"{"_type":"tool_call","tool":"t","duration_ms":1,"bytes_up":2,"bytes_down":3}"#
+        )
+        .is_none(),
+        "missing ts must be None"
+    );
+}
+
+#[test]
+fn extract_tool_call_meta_lenient_on_type_tag_cut() {
+    // The `_type` value itself cut mid-token: the tag scan cannot confirm
+    // "tool_call", so extraction refuses.
+    let f = fixture();
+    let meta = extract_tool_call_meta(&f.full[..20]);
+    assert!(meta.is_none(), "cut _type tag must refuse");
+}
+
+#[test]
+fn extract_tool_call_meta_full_input_without_payloads_still_extracts() {
+    // Metadata-only tool_call (payloads empty): metadata complete, heads empty.
+    let json = r#"{"_type":"tool_call","id":null,"session_id":"s","tool":"Calc","bytes_up":0,"bytes_down":0,"duration_ms":5,"ts":7,"args_pretty":"","result_pretty":""}"#;
+    let meta = extract_tool_call_meta(json).expect("metadata-only payload parses");
+    assert_eq!(meta.tool, "Calc");
+    assert_eq!(meta.duration_ms, 5);
+    assert_eq!(meta.ts, 7);
+    assert_eq!(meta.args_pretty_head, "");
+    assert_eq!(meta.result_pretty_head, "");
+}

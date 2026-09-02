@@ -28,6 +28,32 @@ export function parse_line(line: string, max: number): {
  */
 export function is_valid(line: string): boolean;
 
+/**
+ * Lenient metadata extraction from a (possibly truncated) `tool_call` event
+ * JSON payload — no JSON parse, a literal scan shared with the server.
+ * `*_pretty_head` carry the raw (possibly cut) payload string contents.
+ *
+ * @param {string} text the (possibly truncated) tool_call JSON payload
+ * @returns {{
+ *   tool: string;
+ *   duration_ms: number;
+ *   bytes_up: number;
+ *   bytes_down: number;
+ *   ts: number;
+ *   args_pretty_head: string;
+ *   result_pretty_head: string;
+ * } | null} null when the metadata fields are missing
+ */
+export function extract_tool_call_meta(text: string): {
+  tool: string;
+  duration_ms: number;
+  bytes_up: number;
+  bytes_down: number;
+  ts: number;
+  args_pretty_head: string;
+  result_pretty_head: string;
+} | null;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {

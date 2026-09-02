@@ -18,7 +18,15 @@
  *
  * @type {ReadonlySet<string>}
  */
-const VALIDATOR_TYPES = new Set(["ready", "pong", "assistant", "error"]);
+const VALIDATOR_TYPES = new Set([
+  "ready",
+  "pong",
+  "assistant",
+  "error",
+  "ack",
+  "session_meta",
+  "tool_call",
+]);
 
 /**
  * Registered handlers, keyed by wire `_type`. Module-level registry: there is

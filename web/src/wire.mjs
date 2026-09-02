@@ -4,6 +4,9 @@ import {
   validatePong,
   validateAssistant,
   validateError,
+  validateAck,
+  validateSession_meta,
+  validateTool_call,
 } from "../generated/validators.mjs";
 
 /**
@@ -42,9 +45,47 @@ import {
  */
 
 /**
+ * An `ack` reply to a client control-plane frame (e.g. `rename`).
+ *
+ * @typedef {object} AckEvent
+ * @property {"ack"} _type
+ * @property {string} for_type
+ * @property {string | null} message
+ * @property {boolean} ok
+ */
+
+/**
+ * A `session_meta` event sent by the server after the WebSocket connects.
+ *
+ * @typedef {object} SessionMetaEvent
+ * @property {"session_meta"} _type
+ * @property {number} created_at
+ * @property {string} session_id
+ * @property {string} title
+ */
+
+/**
+ * A `tool_call` event: the server's notification that a tool ran. Payloads
+ * are the abridged pretty-printed JSON (metadata first, payload last on the
+ * wire, so a truncated frame keeps usable metadata).
+ *
+ * @typedef {object} ToolCallEvent
+ * @property {"tool_call"} _type
+ * @property {string | null} id
+ * @property {string} session_id
+ * @property {string} tool
+ * @property {string} args_pretty
+ * @property {string} result_pretty
+ * @property {number} bytes_up
+ * @property {number} bytes_down
+ * @property {number} duration_ms
+ * @property {number} ts
+ */
+
+/**
  * Any event the server may send over the wire.
  *
- * @typedef {ReadyEvent | PongEvent | AssistantEvent | ErrorEvent} WireEvent
+ * @typedef {ReadyEvent | PongEvent | AssistantEvent | ErrorEvent | AckEvent | SessionMetaEvent | ToolCallEvent} WireEvent
  */
 
 /**
@@ -95,6 +136,9 @@ const validators = {
   pong: validatePong,
   assistant: validateAssistant,
   error: validateError,
+  ack: validateAck,
+  session_meta: validateSession_meta,
+  tool_call: validateTool_call,
 };
 
 /**

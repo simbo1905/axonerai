@@ -1,6 +1,21 @@
 /* @ts-self-types="./lineformat.d.ts" */
 
 /**
+ * Lenient metadata extraction from a (possibly truncated) `tool_call`
+ * payload: `{ tool, duration_ms, bytes_up, bytes_down, ts,
+ * args_pretty_head, result_pretty_head }`, or `null` when the metadata
+ * fields are missing.
+ * @param {string} text
+ * @returns {any}
+ */
+export function extract_tool_call_meta(text) {
+    const ptr0 = passStringToWasm0(text, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.extract_tool_call_meta(ptr0, len0);
+    return ret;
+}
+
+/**
  * Cheap validity check: does the line start with `<digits>\0`?
  * @param {string} line
  * @returns {boolean}

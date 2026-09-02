@@ -1,7 +1,7 @@
 // @ts-check
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatDuration, formatBytes } from "./format.mjs";
+import { formatDuration, formatBytes, formatClock } from "./format.mjs";
 
 test("formatDuration table", () => {
   /** @type {Array<[number, string]>} */
@@ -51,4 +51,17 @@ test("formatBytes table", () => {
   for (const [input, expected] of cases) {
     assert.equal(formatBytes(input), expected, `formatBytes(${input})`);
   }
+});
+
+test("formatClock renders a local 24-hour hh:mm:ss wall clock", () => {
+  // 12:34:56 local time on 2026-01-02 (timezone-agnostic: derive the epoch
+  // from the same local fields the formatter reads back).
+  const ms = new Date(2026, 0, 2, 12, 34, 56).getTime();
+  assert.equal(formatClock(ms), "12:34:56", "midday clock");
+  const early = new Date(2026, 0, 2, 3, 5, 7).getTime();
+  assert.equal(formatClock(early), "03:05:07", "zero-padded clock");
+});
+
+test("formatClock rejects non-finite timestamps", () => {
+  assert.equal(formatClock(Number.NaN), "--:--:--");
 });

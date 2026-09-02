@@ -30,6 +30,20 @@ function describe(event) {
         label: "System",
         text: event.id ? `pong (${event.id})` : "pong",
       };
+    // Unreachable through agt-chat-log (tool_call renders via agt-tool-line
+    // when /verbose is ON and is skipped when OFF; ack/session_meta are not
+    // pushed to the store) — kept exhaustive so a stray frozen frame still
+    // renders defensively instead of crashing the log.
+    case "tool_call":
+      return { role: "system", label: "Tool", text: event.tool };
+    case "ack":
+      return {
+        role: "system",
+        label: "System",
+        text: `ack ${event.for_type}${event.ok ? "" : " (failed)"}`,
+      };
+    case "session_meta":
+      return { role: "system", label: "System", text: event.title };
   }
 }
 

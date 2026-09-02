@@ -3,6 +3,17 @@ import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
 import { dispatch, registerHandler } from "../dispatch.mjs";
 import { createStore } from "../store.mjs";
 import { COMMANDS, parseInput } from "../commands.mjs";
+import {
+  extractToolCallMeta,
+  initLineformat,
+  parseWireLine,
+} from "/src/lineformat.mjs";
+import {
+  appendEvents,
+  getFrontier,
+  mergeCatchup,
+  openHistory,
+} from "/src/history.mjs";
 import "./agt-status.js";
 import "./agt-chat-log.js";
 import "./agt-composer.js";
@@ -12,34 +23,21 @@ import "./agt-panel.js";
  * @typedef {import("/src/wire.mjs").WireEvent} WireEvent
  * @typedef {import("/src/wire.mjs").PromptEvent} PromptEvent
  * @typedef {import("/src/wire.mjs").ChatEvent} ChatEvent
- * @typedef {import("/src/wire.mjs").ErrorEvent} ErrorEvent
+ * @typedef {import("/src/wire.mjs").ToolCallEvent} ToolCallEvent
+ * @typedef {import("/src/lineformat.mjs").WireFrame} WireFrame
  * @typedef {import("./agt-status.js").StatusValue} StatusValue
  * @typedef {import("./agt-panel.js").StateSnapshot} StateSnapshot
  */
 
 /**
- * A `session_meta` event sent by the server after the WebSocket connects.
- * Validated by the generated web/generated/session_meta.mjs JTD validator.
- * NOTE: wire.mjs's registry does not accept this `_type` yet (wire-layer
- * follow-on), so the client passes these frames through pre-validated; the
- * local typedef keeps handlers typed here without touching wire.mjs.
+ * One persisted history record in IndexedDB (`agt.events`).
  *
- * @typedef {object} SessionMetaEvent
- * @property {"session_meta"} _type
- * @property {number} created_at
- * @property {string} session_id
- * @property {string} title
- */
-
-/**
- * An `ack` reply to a client control-plane frame (e.g. `rename`). Validated
- * by the generated web/generated/ack.mjs JTD validator (same follow-on note).
- *
- * @typedef {object} AckEvent
- * @property {"ack"} _type
- * @property {string} for_type
- * @property {string | null} message
- * @property {boolean} ok
+ * @typedef {object} HistoryRecord
+ * @property {string} sessionId
+ * @property {number} ts stamp: server `_ts` for catch-up records,
+ * `Date.now()` at receipt for live events
+ * @property {ChatEvent} event the validated frozen event (or the partial
+ * tool_call reconstruction)
  */
 
 /**
@@ -74,6 +72,10 @@ export class AgtApp extends HTMLElement {
   #pendingRename = null;
   /** @type {import("./agt-panel.js").AgtPanel | null} */
   #panel = null;
+  /** @type {string | null} */
+  #sessionId = null;
+  /** @type {Promise<IDBDatabase> | null} */
+  #historyDb = null;
 
   /** Frozen chat-state snapshot (server events + prompt records). */
   get state() {
@@ -140,9 +142,163 @@ export class AgtApp extends HTMLElement {
       // #pending changes still render manually below.
       this.#store.subscribe(() => this.#render());
 
-      this.#wireClient();
+      // /verbose re-renders the log (tool_call lines appear/disappear) —
+      // history included.
+      window.addEventListener("agt-verbose-changed", () => this.#render());
+
+      this.#boot();
     }
     this.#render();
+  }
+
+  /**
+   * Boot: with `?s=<uuid>` catch up over the line protocol BEFORE opening
+   * the WebSocket; then connect live.
+   */
+  async #boot() {
+    const sessionParam = new URLSearchParams(location.search).get("s");
+    if (sessionParam) {
+      this.#sessionId = sessionParam;
+      await this.#catchUp(sessionParam);
+    }
+    await this.#wireClient();
+  }
+
+  /**
+   * Catch up a session from the server's line-protocol endpoint
+   * (`/api/session/<uuid>?after=<frontier>`), replaying validated events
+   * into the store AND IndexedDB history before the WebSocket opens. Never
+   * throws — a failure leaves chat fully functional (live only).
+   *
+   * @param {string} sessionId
+   */
+  async #catchUp(sessionId) {
+    try {
+      await initLineformat();
+      const db = await this.#history();
+      const frontier = await getFrontier(db, sessionId);
+      const res = await fetch(
+        `/api/session/${encodeURIComponent(sessionId)}?after=${frontier}`,
+      );
+      if (!res.ok) return;
+      const body = await res.text();
+      /** @type {WireFrame[]} */
+      const frames = [];
+      for (const line of body.split("\n")) {
+        if (line.length === 0) continue;
+        try {
+          frames.push(await parseWireLine(line, 1024));
+        } catch (error) {
+          // Corruption: HALT — keep everything received up to this point,
+          // never skip ahead.
+          console.warn("[catchup] halting at corrupt line", error);
+          break;
+        }
+      }
+      const fresh = mergeCatchup(frames, frontier);
+      /** @type {HistoryRecord[]} */
+      const records = [];
+      for (const frame of fresh) {
+        const event = await this.#frameToEvent(frame, sessionId);
+        if (event) records.push({ sessionId, ts: frame.ts, event });
+      }
+      if (records.length > 0) {
+        this.#store.appendAll(records.map((record) => record.event));
+        await appendEvents(db, sessionId, records);
+      }
+    } catch (error) {
+      console.warn("[catchup] failed", error);
+    }
+  }
+
+  /**
+   * Convert one parsed catch-up frame into a validated frozen chat event:
+   * - strict JSON → `parseWireEvent` (validated, deep-frozen);
+   * - strict parse failure AND `tool_call` type → lenient metadata
+   *   extraction (shared Rust/WASM scan) → synthesized deep-frozen partial
+   *   tool_call event with the truncated pretty heads;
+   * - anything else → null (skip).
+   *
+   * @param {WireFrame} frame
+   * @param {string} sessionId
+   * @returns {Promise<ChatEvent | null>}
+   */
+  async #frameToEvent(frame, sessionId) {
+    /** @type {unknown} */
+    let parsed;
+    try {
+      parsed = JSON.parse(frame.text);
+    } catch {
+      parsed = undefined;
+    }
+    if (parsed !== undefined && parsed !== null) {
+      // Client-echo and rollout-internal records are persisted on the wire
+      // log but are not server events — skip them silently (they have no
+      // JTD validator, so parseWireEvent would drop them noisily).
+      if (
+        /** @type {any} */ (parsed)._type === "prompt" ||
+        /** @type {any} */ (parsed)._type === "session_rename"
+      ) {
+        return null;
+      }
+      const event = parseWireEvent(parsed);
+      if (!event) return null;
+      if (event._type === "session_meta") {
+        this.#panel?.setSessionTitle(event.title);
+        return null;
+      }
+      if (event._type === "ack") return null;
+      return event;
+    }
+    if (frame.type === "tool_call") {
+      const meta = await extractToolCallMeta(frame.text);
+      if (!meta) return null;
+      /** @type {ToolCallEvent & { abridged: true }} */
+      const partial = {
+        _type: "tool_call",
+        id: null,
+        session_id: sessionId,
+        tool: meta.tool,
+        duration_ms: meta.duration_ms,
+        bytes_up: meta.bytes_up,
+        bytes_down: meta.bytes_down,
+        ts: meta.ts,
+        args_pretty: meta.args_pretty_head,
+        result_pretty: meta.result_pretty_head,
+        abridged: true,
+      };
+      return deepFreeze(partial);
+    }
+    return null;
+  }
+
+  /**
+   * Lazily open (and keep) the IndexedDB history connection.
+   *
+   * @returns {Promise<IDBDatabase>}
+   */
+  #history() {
+    const existing = this.#historyDb;
+    if (existing) return existing;
+    const created = openHistory();
+    this.#historyDb = created;
+    return created;
+  }
+
+  /**
+   * Persist one validated event to history under the current session id
+   * (stamped at receipt). Fire-and-forget: history failures never break
+   * chat.
+   *
+   * @param {ChatEvent} event
+   */
+  #recordHistory(event) {
+    const sessionId = this.#sessionId;
+    if (!sessionId) return;
+    const record = { sessionId, ts: Date.now(), event };
+    this.#history()
+      .then((db) => appendEvents(db, sessionId, [record]))
+      .catch((error) => console.warn("[history] append failed", error));
   }
 
   async #wireClient() {
@@ -200,30 +356,29 @@ export class AgtApp extends HTMLElement {
         this.#render();
       }
     });
-    registerHandler(
-      /** @type {any} */ ("session_meta"),
-      (/** @type {unknown} */ rawEvent) => {
-        const event = /** @type {SessionMetaEvent} */ (rawEvent);
-        this.#panel?.setSessionTitle(event.title);
-      },
-    );
-    registerHandler(
-      /** @type {any} */ ("ack"),
-      (/** @type {unknown} */ rawEvent) => {
-        const event = /** @type {AckEvent} */ (rawEvent);
-        if (event.for_type !== "rename") return;
-        const title = this.#pendingRename;
-        this.#pendingRename = null;
-        if (event.ok && title !== null) {
-          this.#panel?.setSessionTitle(title);
-          this.#panel?.showSlash(`renamed: ${title}`);
-          this.#fetchState();
-        } else {
-          const message = event.message ? `: ${event.message}` : "";
-          this.#panel?.showSlash(`error: rename failed${message}`);
-        }
-      },
-    );
+    registerHandler("tool_call", (event) => {
+      // Stored (and persisted to history) always; rendered only when the
+      // /verbose flag is ON (agt-chat-log decides).
+      this.#pushEvent(event);
+    });
+    registerHandler("session_meta", (event) => {
+      if (event._type !== "session_meta") return;
+      if (!this.#sessionId) this.#sessionId = event.session_id;
+      this.#panel?.setSessionTitle(event.title);
+    });
+    registerHandler("ack", (event) => {
+      if (event._type !== "ack" || event.for_type !== "rename") return;
+      const title = this.#pendingRename;
+      this.#pendingRename = null;
+      if (event.ok && title !== null) {
+        this.#panel?.setSessionTitle(title);
+        this.#panel?.showSlash(`renamed: ${title}`);
+        this.#fetchState();
+      } else {
+        const message = event.message ? `: ${event.message}` : "";
+        this.#panel?.showSlash(`error: rename failed${message}`);
+      }
+    });
   }
 
   /**
@@ -257,6 +412,9 @@ export class AgtApp extends HTMLElement {
       snapshot = null;
     }
     this.#snapshot = snapshot;
+    if (snapshot && !this.#sessionId) {
+      this.#sessionId = snapshot.session?.id ?? null;
+    }
     this.#panel?.setState(this.#snapshot);
     return this.#snapshot;
   }
@@ -418,13 +576,15 @@ export class AgtApp extends HTMLElement {
   }
 
   /**
-   * Append a validated, deep-frozen event to the store; the store's notify
-   * subscription re-renders from the new frozen snapshot.
+   * Append a validated, deep-frozen event to the store (the store's notify
+   * subscription re-renders from the new frozen snapshot) and persist it to
+   * the session's IndexedDB history.
    *
    * @param {ChatEvent} event
    */
   #pushEvent(event) {
     this.#store.append(event);
+    this.#recordHistory(event);
   }
 
   /**
@@ -444,7 +604,10 @@ export class AgtApp extends HTMLElement {
     const log = /** @type {import("./agt-chat-log.js").AgtChatLog} */ (
       this.querySelector("agt-chat-log")
     );
-    if (log) log.events = this.#store.getEvents();
+    if (log) {
+      log.verbose = this.#verbose.enabled;
+      log.events = this.#store.getEvents();
+    }
 
     const composer = /** @type {import("./agt-composer.js").AgtComposer} */ (
       this.querySelector("agt-composer")
