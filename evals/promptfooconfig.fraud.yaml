@@ -1,0 +1,100 @@
+# item36 Part B — fraud-proof evals: prove the AGENT DOES THE THING on the wire.
+#
+# Run from the repo root (two live axoner-web servers on item36's own ports,
+# fresh sessions, i.e. NO -c):
+#   make serve-up PROVIDER=mistral MODEL=zai-glm-5-2 PORT=9530
+#   make serve-up PROVIDER=opencode-go MODEL=glm-5.2 PORT=9531
+#   promptfoo eval -c evals/promptfooconfig.fraud.yaml -j 1 --no-share
+#   make serve-down PORT=all
+#
+# Conventions: same task.txt prompt template + agt-provider.mjs WS provider as
+# the existing evals/promptfooconfig.yaml, maxConcurrency 1, deterministic
+# asserts only. Provider config `transcript: true` appends `\n[tools] <names>`
+# (the tool_call frames seen on the WS) to the output so asserts can require
+# the agent to have CALLED a tool, not merely said it did.
+#
+# The in-session memory pair ("2^4" then "multiply that by 3") is the
+# regression guard for the native tool-call history fix (fa1007a): both tests
+# run against the same server process, which owns one persistent agent
+# session, so the second prompt must resolve "that" from real tool history.
+description: item36 fraud-proof evals (agent does the thing, on the wire)
+
+prompts:
+  # Paths are resolved relative to this config file's directory.
+  - file://task.txt
+
+providers:
+  - id: file://agt-provider.mjs
+    config:
+      port: 9530
+      label: mistral--zai-glm-5-2
+      transcript: true
+  - id: file://agt-provider.mjs
+    config:
+      port: 9531
+      label: opencode-go--glm-5.2
+      transcript: true
+
+maxConcurrency: 1
+
+defaultTest:
+  options: {}
+
+tests:
+  - description: calculator 2^4 — tool_call event + 16
+    vars:
+      task: >-
+        Use the calculator tool to compute 2 to the power of 4 (multiply 2 by
+        itself the right number of times) and tell me the result.
+    assert:
+      - type: contains
+        value: "16"
+      - type: javascript
+        value: /\[tools\][^\n]*\bcalculator\b/.test(output)
+
+  - description: in-session memory step 1 — 2^4 = 16
+    vars:
+      task: >-
+        Use the calculator tool to compute 2 to the power of 4 (multiply 2 by
+        itself the right number of times) and tell me the result.
+    assert:
+      - type: contains
+        value: "16"
+
+  - description: in-session memory step 2 — multiply THAT by 3 = 48 (fa1007a regression guard)
+    vars:
+      task: >-
+        Take the result of your previous calculation and use the calculator
+        tool to multiply it by 3. Tell me the result.
+    assert:
+      - type: contains
+        value: "48"
+      - type: javascript
+        value: /\[tools\][^\n]*\bcalculator\b/.test(output)
+
+  - description: WebSearch — tool_call event + a URL
+    vars:
+      task: >-
+        Use the WebSearch tool to search the web for 'webassembly' and give me
+        one URL from the results.
+    assert:
+      - type: javascript
+        value: /\[tools\][^\n]*\bWebSearch\b/.test(output)
+      - type: regex
+        value: "https?://"
+
+  - description: suppressed tavily_search must NOT be called
+    vars:
+      task: >-
+        [suppress:tavily_search] Use the WebSearch tool to search the web for
+        'rust programming' and give me one URL from the results.
+    assert:
+      - type: javascript
+        value: /\[tools\][^\n]*\bWebSearch\b/.test(output) && !/\[tools\][^\n]*\btavily_search\b/.test(output)
+
+  - description: slash-only send must NOT reach the model (no assistant event)
+    vars:
+      task: /model
+    assert:
+      - type: javascript
+        value: "output.startsWith('[error]')"

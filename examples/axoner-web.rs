@@ -178,6 +178,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Slash-leading prompts are control plane (the composer contract: "commands
+/// NEVER go to the model"). The data plane enforces the same rule so a raw
+/// WS client cannot burn a model call on a control-plane op: the prompt is
+/// refused with an error frame instead of being forwarded to the agent.
+fn is_slash_command(text: &str) -> bool {
+    text.trim_start().starts_with('/')
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     load_env_file();
@@ -877,6 +885,17 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                 .await;
                         }
                         ClientMsg::Prompt { id, text } => {
+                            if is_slash_command(&text) {
+                                send_error(
+                                    &state,
+                                    &mut socket,
+                                    id.as_deref(),
+                                    "slash commands are control plane and never reach the model",
+                                )
+                                .await;
+                                continue;
+                            }
+
                             let Some(agent) = &state.agent else {
                                 send_error(
                                     &state,
@@ -1192,6 +1211,16 @@ mod tests {
             "01890a5d",                             // wrong length
         ] {
             assert!(!rollout::is_session_id(bad), "{bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn slash_prompts_are_control_plane() {
+        for cmd in ["/model", "/help", "/rename foo", "/  ", "/unknown"] {
+            assert!(is_slash_command(cmd), "{cmd} must be control plane");
+        }
+        for chat in ["", "what is 2^4", "the /model flag", "  use /help maybe  "] {
+            assert!(!is_slash_command(chat), "'{chat}' must be chat");
         }
     }
 }
