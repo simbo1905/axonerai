@@ -15,8 +15,12 @@
       "*/src/wire.mjs": ["./web/src/wire.mjs"],
       "/src/pretty.mjs": ["./web/src/pretty.mjs"],
       "*/src/pretty.mjs": ["./web/src/pretty.mjs"],
+      "/src/lineformat.mjs": ["./web/src/lineformat.mjs"],
+      "*/src/lineformat.mjs": ["./web/src/lineformat.mjs"],
       "/assets/pretty-json.js": ["./web/types/pretty-json-glue.d.ts"],
       "*/assets/pretty-json.js": ["./web/types/pretty-json-glue.d.ts"],
+      "/assets/lineformat.js": ["./web/types/lineformat-glue.d.ts"],
+      "*/assets/lineformat.js": ["./web/types/lineformat-glue.d.ts"],
       "/src/components/agt-app.js": ["./web/src/components/agt-app.js"],
       "*/src/components/agt-app.js": ["./web/src/components/agt-app.js"]
     }

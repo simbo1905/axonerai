@@ -1,0 +1,15 @@
+[package]
+name = "lineformat"
+version = "0.1.0"
+edition = "2021"
+description = "Shared line-format parsing for rollout wire lines, compiled both as rlib (server) and cdylib+wasm (browser)"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.127"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

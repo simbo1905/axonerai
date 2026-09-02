@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use clap::{Parser, Subcommand};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use axonerai::agent::ToolTrace;
@@ -24,9 +24,15 @@ use axonerai::{
     Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
 };
 
-/// Max characters for large string fields on egress to the browser. The
+/// Max characters for large string fields on WS egress to the browser. The
 /// rollout always stores FULL text; abridge is applied only when serving.
 const EGRESS_ABRIDGE_CHARS: usize = 1024;
+
+/// Max bytes for one streamed catch-up payload (`<ts>\0<type>\0<text>\n`).
+/// Oversized payloads are cut char-boundary-safe by `lineformat::truncate_payload`;
+/// no `…` marker is appended — the browser detects truncation by a failed
+/// strict JSON parse.
+const EGRESS_LINE_BYTES: usize = 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "agt", version, about = "AxonerAI tooling")]
@@ -190,6 +196,9 @@ fn resolve_session(
 ) -> anyhow::Result<(Arc<Rollout>, String)> {
     match session {
         Some(id) => {
+            if !rollout::is_session_id(&id) {
+                anyhow::bail!("not a valid session id (must be a lowercase UUID v7): {id}");
+            }
             let rollout = Rollout::open(sessions_dir, &id)
                 .with_context(|| format!("session rollout not found: {id}"))?;
             Ok((Arc::new(rollout), id))
@@ -414,51 +423,36 @@ struct CatchupQuery {
     after: Option<u64>,
 }
 
-/// Prepare one rollout line for egress to the browser: `{"_ts":<ts>, ...event}`,
-/// with conservative abridging of large tool-trace-ish string fields.
-fn egress_line(ts: u64, json: &str) -> anyhow::Result<String> {
-    let mut value: serde_json::Value =
-        serde_json::from_str(json).with_context(|| "rollout line is not valid JSON")?;
-
-    if !value.is_object() {
-        return Ok(format!(r#"{{"_ts":{ts},"value":{json}}}"#));
+/// Format one rollout line for the catch-up stream: `<ts>\0<type>\0<text>\n`.
+///
+/// Linear scans only — NO serde_json parse of the payload on this path. The
+/// `_type` is extracted with the shared literal scan from the `lineformat`
+/// crate, and the payload is truncated at [`EGRESS_LINE_BYTES`] (char-boundary
+/// safe) when oversized. `tool_trace` records are NEVER streamed (returns
+/// `None`).
+fn rollout_frame(ts: u64, json: &str) -> Option<String> {
+    let event_type = lineformat::extract_type(json);
+    if event_type == "tool_trace" {
+        return None;
     }
-
-    let mut abridged = false;
-    if let serde_json::Value::Object(map) = &mut value {
-        for key in ["text", "args", "result", "args_json", "result_json"] {
-            if let Some(serde_json::Value::String(s)) = map.get_mut(key) {
-                if s.chars().count() > EGRESS_ABRIDGE_CHARS {
-                    *s = rollout::abridge(s, EGRESS_ABRIDGE_CHARS);
-                    abridged = true;
-                }
-            }
-        }
-        if abridged {
-            map.insert("abridged".to_string(), serde_json::Value::Bool(true));
-        }
-    }
-
-    let body = serde_json::to_string(&value)?;
-    let inner = body
-        .strip_prefix('{')
-        .and_then(|s| s.strip_suffix('}'))
-        .unwrap_or_default();
-    if inner.is_empty() {
-        Ok(format!(r#"{{"_ts":{ts}}}"#))
-    } else {
-        Ok(format!(r#"{{"_ts":{ts},{inner}}}"#))
-    }
+    let (text, _truncated) = lineformat::truncate_payload(json, EGRESS_LINE_BYTES);
+    Some(format!("{ts}\0{event_type}\0{text}\n"))
 }
 
-/// GET /api/session/:uuid?after=<ms> — chunked ndjson catch-up stream.
+/// GET /api/session/:uuid?after=<ms> — chunked line-format catch-up stream
+/// (`application/x-rollout-line`).
 ///
-/// Streams `{"_ts":<ms>, ...event}` lines (ts > after) straight off a
-/// streaming scan of the rollout; the file is never loaded whole.
+/// Streams `ts\0type\0text` frames (ts > after) straight off a streaming scan
+/// of the rollout; the file is never loaded whole and the payload is never
+/// JSON-parsed. The scan halts cleanly at the first corrupt line — the client
+/// keeps everything received up to that point.
 async fn api_session_catchup(
     Path(uuid): Path<String>,
     Query(query): Query<CatchupQuery>,
 ) -> Response {
+    if !rollout::is_session_id(&uuid) {
+        return (StatusCode::BAD_REQUEST, "invalid session id").into_response();
+    }
     let after = query.after.unwrap_or(0);
     let sessions_dir = rollout::default_dir();
     let session_rollout = match Rollout::open(&sessions_dir, &uuid) {
@@ -469,13 +463,23 @@ async fn api_session_catchup(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(64);
     tokio::task::spawn_blocking(move || {
         let result = session_rollout.scan_from(after, |ts, json| {
-            let line = egress_line(ts, json)?;
-            tx.blocking_send(Ok(line))
-                .map_err(|_| anyhow::anyhow!("catch-up stream closed"))?;
+            if let Some(frame) = rollout_frame(ts, json) {
+                tx.blocking_send(Ok(frame))
+                    .map_err(|_| anyhow::anyhow!("catch-up stream closed"))?;
+            }
             Ok(())
         });
-        if let Err(e) = result {
-            let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+        match result {
+            Ok(()) => {}
+            Err(e) if e.downcast_ref::<rollout::RolloutCorrupted>().is_some() => {
+                // Corruption: halt the stream cleanly at the bad line. Data
+                // before it has already been sent; the client's ts+type
+                // high-watermark accepts exactly that prefix.
+                warn!("catch-up stream halted: {e}");
+            }
+            Err(e) => {
+                let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+            }
         }
     });
 
@@ -485,7 +489,7 @@ async fn api_session_catchup(
 
     match Response::builder()
         .status(StatusCode::OK)
-        .header("content-type", "application/x-ndjson")
+        .header("content-type", "application/x-rollout-line")
         .body(Body::from_stream(stream))
     {
         Ok(response) => response.into_response(),
@@ -495,6 +499,9 @@ async fn api_session_catchup(
 
 /// GET /api/session/:uuid/tail — `{"_ts":<last_ts>}` for frontier checks.
 async fn api_session_tail(Path(uuid): Path<String>) -> Response {
+    if !rollout::is_session_id(&uuid) {
+        return (StatusCode::BAD_REQUEST, "invalid session id").into_response();
+    }
     let sessions_dir = rollout::default_dir();
     match Rollout::open(&sessions_dir, &uuid).and_then(|r| r.last_ts()) {
         Ok(ts) => Json(serde_json::json!({ "_ts": ts })).into_response(),
@@ -655,7 +662,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                         &trace.result_json,
                                         EGRESS_ABRIDGE_CHARS,
                                     );
-                                    let value = serde_json::to_value(&ServerMsg::ToolCall {
+                                    let frame = match serde_json::to_string(&ServerMsg::ToolCall {
                                         id: None,
                                         session_id: &fwd_state.session_id,
                                         tool: &trace.tool,
@@ -665,19 +672,24 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                         bytes_down: trace.bytes_down,
                                         duration_ms: trace.duration_ms,
                                         ts: trace.ts,
-                                    })
-                                    .unwrap_or_else(|_| {
-                                        serde_json::json!({"_type":"tool_call","tool":trace.tool})
-                                    });
-                                    // Durable-first: append, then send.
-                                    let _ = fwd_state.rollout.append_event(&value);
-                                    let _ = fwd_out.send(value.to_string());
+                                    }) {
+                                        Ok(frame) => frame,
+                                        Err(_) => {
+                                            serde_json::json!({"_type":"tool_call","tool":trace.tool}).to_string()
+                                        }
+                                    };
+                                    // Durable-first: append (raw, so the manual
+                                    // payload-last field order survives on
+                                    // disk), then send the same bytes.
+                                    let _ = fwd_state.rollout.append_json(&frame);
+                                    let _ = fwd_out.send(frame);
 
                                     // Separate full-fidelity record — never
                                     // abridged, so the rollout keeps the whole
-                                    // tool result.
-                                    let full_value =
-                                        serde_json::to_value(&RolloutRecord::ToolTrace {
+                                    // tool result. Raw serialization keeps the
+                                    // payload-last byte order on disk.
+                                    let full_json = match serde_json::to_string(
+                                        &RolloutRecord::ToolTrace {
                                             tool: trace.tool,
                                             args_json: trace.args_json,
                                             result_json: trace.result_json,
@@ -685,11 +697,12 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                             bytes_down: trace.bytes_down,
                                             duration_ms: trace.duration_ms,
                                             ts: trace.ts,
-                                        })
-                                        .unwrap_or_else(|_| {
-                                            serde_json::json!({"_type":"tool_trace"})
-                                        });
-                                    let _ = fwd_state.rollout.append_event(&full_value);
+                                        },
+                                    ) {
+                                        Ok(json) => json,
+                                        Err(_) => serde_json::json!({"_type":"tool_trace"}).to_string(),
+                                    };
+                                    let _ = fwd_state.rollout.append_json(&full_json);
                                 }
                             });
 
@@ -844,4 +857,74 @@ fn build_agent_from_config(
         system_prompt,
         None,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rollout_frame_emits_line_format_for_normal_events() {
+        let ts = 1_717_238_400_000u64;
+        let json = r#"{"_type":"assistant","text":"hi"}"#;
+        let frame = rollout_frame(ts, json).unwrap();
+        assert_eq!(frame, format!("{ts}\0assistant\0{json}\n"));
+
+        // No `_type` in the payload → empty type field, payload intact.
+        let frame = rollout_frame(ts, r#"{"x":1}"#).unwrap();
+        assert_eq!(frame, format!("{ts}\0\0{{\"x\":1}}\n"));
+    }
+
+    #[test]
+    fn rollout_frame_never_streams_tool_trace_records() {
+        let ts = 1_717_238_400_000u64;
+        let json = r#"{"_type":"tool_trace","tool":"WebSearch","result_json":"big"}"#;
+        assert!(rollout_frame(ts, json).is_none());
+    }
+
+    #[test]
+    fn rollout_frame_truncates_oversized_payload_detectably() {
+        let ts = 1_717_238_400_000u64;
+        let big = format!(
+            "{{\"_type\":\"tool_call\",\"tool\":\"WebSearch\",\"result_json\":\"{}\"}}",
+            "x".repeat(3000)
+        );
+        let frame = rollout_frame(ts, &big).unwrap();
+        assert!(frame.ends_with('\n'));
+        let payload = frame.trim_end_matches('\n');
+        let mut parts = payload.split('\0');
+        assert_eq!(parts.next().unwrap(), ts.to_string());
+        assert_eq!(parts.next().unwrap(), "tool_call");
+        let text = parts.next().unwrap();
+        assert_eq!(text.len(), EGRESS_LINE_BYTES, "cut exactly at the limit");
+        assert!(
+            text.contains("\"tool\":\"WebSearch\""),
+            "metadata survives: {text}"
+        );
+        // Truncation-detection rule: strict parse of a cut payload fails, so
+        // the browser can deterministically mark it partial.
+        assert!(serde_json::from_str::<serde_json::Value>(text).is_err());
+    }
+
+    #[test]
+    fn rollout_frame_keeps_small_payloads_untouched() {
+        let ts = 1_717_238_400_000u64;
+        let json = r#"{"_type":"tool_call","result_pretty":"\"x\""}"#;
+        let frame = rollout_frame(ts, json).unwrap();
+        assert!(frame.ends_with(&format!("\0{json}\n")));
+    }
+
+    #[test]
+    fn session_uuid_gate_rejects_adversarial_ids() {
+        let valid = "01890a5d-ac96-774b-bcce-b302099a8057";
+        assert!(rollout::is_session_id(valid));
+        for bad in [
+            "550e8400-e29b-41d4-a716-446655440000", // v4
+            "01890A5D-AC96-774B-BCCE-B302099A8057", // uppercase
+            "../../etc/passwd",                     // traversal
+            "01890a5d",                             // wrong length
+        ] {
+            assert!(!rollout::is_session_id(bad), "{bad} must be rejected");
+        }
+    }
 }

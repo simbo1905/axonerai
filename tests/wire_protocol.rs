@@ -339,8 +339,11 @@ fn rollout_round_trip_and_full_vs_abridged_invariant() {
         duration_ms: 512,
         ts: 1_700_000_000_001,
     };
-    let wire_value = serde_json::to_value(&wire).unwrap();
-    r.append_event(&wire_value).unwrap();
+    // Written RAW so the manual Serialize field order (metadata first,
+    // payloads last) survives on disk — a to_value roundtrip would reorder
+    // keys alphabetically.
+    let wire_json = serde_json::to_string(&wire).unwrap();
+    r.append_json(&wire_json).unwrap();
 
     let trace = RolloutRecord::ToolTrace {
         tool: "WebSearch".to_string(),
@@ -351,8 +354,8 @@ fn rollout_round_trip_and_full_vs_abridged_invariant() {
         duration_ms: 512,
         ts: 1_700_000_000_001,
     };
-    let trace_value = serde_json::to_value(&trace).unwrap();
-    r.append_event(&trace_value).unwrap();
+    let trace_json = serde_json::to_string(&trace).unwrap();
+    r.append_json(&trace_json).unwrap();
 
     let rename = RolloutRecord::SessionRename {
         title: "renamed by test".to_string(),
@@ -360,6 +363,33 @@ fn rollout_round_trip_and_full_vs_abridged_invariant() {
     };
     let rename_value = serde_json::to_value(&rename).unwrap();
     r.append_event(&rename_value).unwrap();
+
+    // Payload-last byte-order contract on disk: result_json must occur AFTER
+    // duration_ms and args_json AFTER tool, so a crash-truncated line keeps
+    // usable metadata.
+    let bytes = std::fs::read_to_string(r.path()).unwrap();
+    let trace_line = bytes
+        .lines()
+        .find(|l| l.contains("\"_type\":\"tool_trace\""))
+        .expect("tool_trace line on disk");
+    let wire_line = bytes
+        .lines()
+        .find(|l| l.contains("\"_type\":\"tool_call\""))
+        .expect("tool_call line on disk");
+    let pos = |hay: &str, needle: &str| hay.find(needle).expect(needle);
+    assert!(
+        pos(trace_line, "\"duration_ms\"") < pos(trace_line, "\"args_json\""),
+        "args_json must come after metadata on disk"
+    );
+    assert!(
+        pos(trace_line, "\"args_json\"") < pos(trace_line, "\"result_json\""),
+        "result_json must be LAST on disk"
+    );
+    assert!(
+        pos(wire_line, "\"duration_ms\"") < pos(wire_line, "\"args_pretty\"")
+            && pos(wire_line, "\"args_pretty\"") < pos(wire_line, "\"result_pretty\""),
+        "wire tool_call payloads must be last on disk"
+    );
 
     // Stream everything back and assert shapes.
     let mut metas = Vec::new();
@@ -424,7 +454,8 @@ fn rollout_round_trip_and_full_vs_abridged_invariant() {
 
     // Schemas also validate the full-fidelity record's serialized shape via
     // the serde round-trip of RolloutRecord.
-    let back: RolloutRecord = serde_json::from_value(trace_value).unwrap();
+    let back: RolloutRecord =
+        serde_json::from_value(serde_json::to_value(&trace).unwrap()).unwrap();
     assert_eq!(back, trace);
     let back: RolloutRecord = serde_json::from_value(rename_value).unwrap();
     assert_eq!(back, rename);

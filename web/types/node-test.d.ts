@@ -11,11 +11,26 @@ declare module "node:test" {
     /** Register a callback to run after the test finishes. */
     after(fn: () => void | Promise<void>): void;
   }
+  /** Per-test options, as used by the handwritten web tests. */
+  export interface TestOptions {
+    /** Skip the test; a string message documents why (shown in output). */
+    skip?: boolean | string;
+  }
   /**
    * @param {string} name
    * @param {(t: TestContext) => void | Promise<void>} fn
    */
   function test(name: string, fn: (t: TestContext) => void | Promise<void>): void;
+  /**
+   * @param {string} name
+   * @param {TestOptions} options
+   * @param {(t: TestContext) => void | Promise<void>} fn
+   */
+  function test(
+    name: string,
+    options: TestOptions,
+    fn: (t: TestContext) => void | Promise<void>,
+  ): void;
   export default test;
 }
 
@@ -36,4 +51,25 @@ declare module "node:assert/strict" {
     error?: ((error: unknown) => boolean | void) | Error | RegExp | (new (...args: any[]) => Error),
     message?: string,
   ): void;
+}
+
+declare module "node:fs" {
+  /**
+   * @param {string | URL} path
+   * @returns {boolean}
+   */
+  export function existsSync(path: string | URL): boolean;
+  /**
+   * @param {string | URL} path
+   * @returns {Uint8Array}
+   */
+  export function readFileSync(path: string | URL): Uint8Array;
+}
+
+declare module "node:url" {
+  /**
+   * @param {URL} url
+   * @returns {string}
+   */
+  export function fileURLToPath(url: URL): string;
 }

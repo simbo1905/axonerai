@@ -1,5 +1,6 @@
 /target
 wasm/pretty-json/target/
+wasm/lineformat/target/
 .env
 server_direct.log
 .tmp

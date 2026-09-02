@@ -5,7 +5,7 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty
+.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat
 
 # Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
 # Must run before `cargo build`: src/prompt.rs embeds
@@ -56,6 +56,15 @@ build-server:
 wasm-pretty:
 	cargo build --manifest-path wasm/pretty-json/Cargo.toml --release --target wasm32-unknown-unknown
 	wasm-bindgen --target web wasm/pretty-json/target/wasm32-unknown-unknown/release/pretty_json.wasm --out-dir web/assets --out-name pretty-json
+
+# Build the shared wire-line parser for the browser: release wasm32 build plus
+# wasm-bindgen glue. The generated web/assets/lineformat.js and
+# lineformat_bg.wasm are committed (zero-node deploy). The wasm-bindgen-cli
+# version must equal the wasm-bindgen crate version pinned in
+# wasm/lineformat/Cargo.toml (currently 0.2.127).
+wasm-lineformat:
+	cargo build --manifest-path wasm/lineformat/Cargo.toml --release --target wasm32-unknown-unknown
+	wasm-bindgen --target web wasm/lineformat/target/wasm32-unknown-unknown/release/lineformat.wasm --out-dir web/assets --out-name lineformat
 
 serve-up:
 	@tooling/serve.lua up $(PROVIDER) $(MODEL) $(PORT)

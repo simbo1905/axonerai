@@ -1,11 +1,60 @@
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
+use lineformat::LineError;
 use serde::Serialize;
 use serde_json::Value;
+
+/// A rollout is corrupt: the line at `line_no` / `byte_offset` failed the
+/// strict `<digits>\0<json>\n` prefix validation. Reading HALTS at the first
+/// bad line (never skips) so callers can serve data up to the corruption
+/// point and warn server-side.
+#[derive(Debug, Clone)]
+pub struct RolloutCorrupted {
+    pub line_no: u64,
+    pub byte_offset: u64,
+    pub kind: LineError,
+}
+
+impl fmt::Display for RolloutCorrupted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "rollout corrupt at line {} (byte offset {}): {}",
+            self.line_no, self.byte_offset, self.kind
+        )
+    }
+}
+
+impl std::error::Error for RolloutCorrupted {}
+
+/// Is `s` a well-formed session id: a lowercase UUID v7
+/// (`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).
+/// Every entry point for session ids (CLI `-s`, REST paths, index filenames)
+/// must pass through this check.
+pub fn is_session_id(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    let hex = |b: u8| b.is_ascii_hexdigit() && !b.is_ascii_uppercase();
+    let hyphens = [8, 13, 18, 23];
+    for (i, &b) in bytes.iter().enumerate() {
+        let is_hyphen_slot = hyphens.contains(&i);
+        if is_hyphen_slot {
+            if b != b'-' {
+                return false;
+            }
+        } else if !hex(b) {
+            return false;
+        }
+    }
+    bytes[14] == b'7' && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+}
 
 /// Append-only, timestamped JSONL log (`.jsonlts`).
 ///
@@ -32,19 +81,14 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Split a raw rollout line into `(ts, json)`. Returns `None` for malformed
-/// lines (no `\0` separator or a non-numeric timestamp).
-fn split_line(line: &str) -> Option<(u64, &str)> {
-    let (ts_raw, json) = line.split_once('\0')?;
-    let ts = ts_raw.parse::<u64>().ok()?;
-    Some((ts, json))
-}
-
 impl Rollout {
     /// Create a fresh rollout file for `session_id` in `dir`.
     ///
     /// Errors if the file already exists — the caller must pick a fresh id.
     pub fn create(dir: &Path, session_id: &str) -> Result<Rollout> {
+        if !is_session_id(session_id) {
+            return Err(anyhow!("not a valid session id: {session_id}"));
+        }
         fs::create_dir_all(dir)
             .with_context(|| format!("failed to create sessions dir {}", dir.display()))?;
         let path = dir.join(format!("{session_id}.jsonlts"));
@@ -75,6 +119,15 @@ impl Rollout {
     /// order.
     pub fn append_event(&self, event: &Value) -> Result<u64> {
         let json = serde_json::to_string(event)?;
+        self.append_json(&json)
+    }
+
+    /// Append pre-serialized JSON with the same monotonic timestamp guard as
+    /// [`Rollout::append_event`]. Use this for records whose byte-level field
+    /// order matters (the manual payload-last `Serialize` impls in
+    /// `src/wire.rs`) — a `to_value` roundtrip would reorder keys
+    /// alphabetically.
+    pub fn append_json(&self, json: &str) -> Result<u64> {
         let mut ts = now_ms();
         let last = self.last_ts()?;
         if ts <= last {
@@ -90,87 +143,123 @@ impl Rollout {
         Ok(ts)
     }
 
-    /// Stream-scan the rollout, invoking `visit(ts, json)` for every well-formed
-    /// record with `ts > after_ts`, in file order. Malformed lines are skipped.
-    /// Never buffers the whole file.
+    /// Stream-scan the rollout, invoking `visit(ts, json)` for every record
+    /// with `ts > after_ts`, in file order. Strict: the scan HALTS at the
+    /// first line failing the `<digits>\0` prefix validation with
+    /// [`RolloutCorrupted`] — malformed data is never skipped. A crash-
+    /// truncated final line (no trailing `\n`) is accepted when its prefix is
+    /// valid; its JSON may be incomplete (the client's lenient path handles
+    /// it). Never buffers the whole file.
     pub fn scan_from(
         &self,
         after_ts: u64,
         mut visit: impl FnMut(u64, &str) -> Result<()>,
     ) -> Result<()> {
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open rollout {}", self.path.display()))?;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            let Some((ts, json)) = split_line(&line) else {
-                continue;
-            };
-            if ts <= after_ts {
-                continue;
+        self.walk(|ts, json| {
+            if ts > after_ts {
+                visit(ts, json)?;
             }
-            visit(ts, json)?;
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     /// The greatest timestamp written to this rollout (0 for an empty file).
+    /// Halts on corruption like [`Rollout::scan_from`].
     pub fn last_ts(&self) -> Result<u64> {
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open rollout {}", self.path.display()))?;
         let mut last = 0u64;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if let Some((ts, _)) = split_line(&line) {
-                last = ts;
-            }
-        }
+        self.walk(|ts, _| {
+            last = ts;
+            Ok(())
+        })?;
         Ok(last)
     }
 
-    /// Number of (well-formed) records in this rollout.
+    /// Number of records in this rollout. Halts on corruption like
+    /// [`Rollout::scan_from`].
     pub fn line_count(&self) -> Result<u64> {
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open rollout {}", self.path.display()))?;
         let mut count = 0u64;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if split_line(&line).is_some() {
-                count += 1;
-            }
-        }
+        self.walk(|_, _| {
+            count += 1;
+            Ok(())
+        })?;
         Ok(count)
     }
 
     /// Streaming scan: the session title — the first `session_meta` line's
-    /// `title`, else the rollout's uuid (file stem).
+    /// `title`, else the rollout's uuid (file stem). Halts on corruption
+    /// like [`Rollout::scan_from`].
     pub fn title(&self) -> Result<String> {
-        let file = File::open(&self.path)
-            .with_context(|| format!("failed to open rollout {}", self.path.display()))?;
         let fallback = self
             .path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("session")
             .to_string();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            let Some((_, json)) = split_line(&line) else {
-                continue;
-            };
+        let mut found: Option<String> = None;
+        self.walk(|_, json| {
+            if found.is_some() {
+                return Ok(());
+            }
             let Ok(v) = serde_json::from_str::<Value>(json) else {
-                continue;
+                return Ok(());
             };
             if v.get("_type").and_then(Value::as_str) == Some("session_meta") {
                 if let Some(t) = v.get("title").and_then(Value::as_str) {
-                    return Ok(t.to_string());
+                    found = Some(t.to_string());
                 }
             }
+            Ok(())
+        })?;
+        Ok(found.unwrap_or(fallback))
+    }
+
+    /// Private line walker backing every read path: streams the file line by
+    /// line (tracking 1-based line numbers and byte offsets) and HALTS at the
+    /// first line whose ts prefix is invalid with [`RolloutCorrupted`]. The
+    /// final line without a trailing `\n` is accepted when its prefix is
+    /// valid — a crash during the last write must not lose the record.
+    fn walk(&self, mut visit: impl FnMut(u64, &str) -> Result<()>) -> Result<()> {
+        let file = File::open(&self.path)
+            .with_context(|| format!("failed to open rollout {}", self.path.display()))?;
+        let mut reader = BufReader::new(file);
+        let mut byte_offset = 0u64;
+        let mut line_no = 0u64;
+        loop {
+            let mut raw = String::new();
+            let n = reader
+                .read_line(&mut raw)
+                .with_context(|| format!("failed to read rollout {}", self.path.display()))?;
+            if n == 0 {
+                return Ok(());
+            }
+            line_no += 1;
+            let line = raw.strip_suffix('\n').unwrap_or(&raw);
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            match lineformat::ts_prefix(line) {
+                Ok(ts) => {
+                    let json = &line[line.find('\0').expect("validated prefix has a NUL") + 1..];
+                    visit(ts, json)?;
+                }
+                Err(kind) => {
+                    return Err(RolloutCorrupted {
+                        line_no,
+                        byte_offset,
+                        kind,
+                    }
+                    .into());
+                }
+            }
+            byte_offset += n as u64;
         }
-        Ok(fallback)
     }
 }
 
 /// Index every `*.jsonlts` rollout in `dir`, sorted by `updated` descending.
+///
+/// Only files whose stem is a valid UUID v7 session id ([`is_session_id`])
+/// are indexed — junk or foreign files are ignored. The scan of each file is
+/// strict: the first line failing the ts prefix validation HALTS the index
+/// with [`RolloutCorrupted`] (malformed data is never skipped).
 ///
 /// Title resolution, in a single streaming pass per file: the last
 /// `session_rename` line's `title` wins; otherwise the first `session_meta`
@@ -197,23 +286,45 @@ pub fn sessions_index(dir: &Path) -> Result<Vec<SessionInfo>> {
         let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        if !is_session_id(uuid) {
+            continue;
+        }
         let size = entry.metadata()?.len();
 
         let mut updated = 0u64;
         let mut rename_title: Option<String> = None;
         let mut meta_title: Option<String> = None;
         let file = File::open(&path)?;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            let Some((ts_raw, json)) = line.split_once('\0') else {
-                continue;
+        let mut reader = BufReader::new(file);
+        let mut line_no = 0u64;
+        let mut byte_offset = 0u64;
+        loop {
+            let mut raw = String::new();
+            let n = reader
+                .read_line(&mut raw)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            line_no += 1;
+            let line = raw.strip_suffix('\n').unwrap_or(&raw);
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let ts = match lineformat::ts_prefix(line) {
+                Ok(ts) => ts,
+                Err(kind) => {
+                    return Err(RolloutCorrupted {
+                        line_no,
+                        byte_offset,
+                        kind,
+                    }
+                    .into());
+                }
             };
-            let Ok(ts) = ts_raw.parse::<u64>() else {
-                continue;
-            };
+            byte_offset += n as u64;
             if ts > updated {
                 updated = ts;
             }
+            let json = &line[line.find('\0').expect("validated prefix has a NUL") + 1..];
             let Ok(v) = serde_json::from_str::<Value>(json) else {
                 continue;
             };
@@ -272,6 +383,7 @@ pub fn abridge(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lineformat::LineError;
     use serde_json::json;
     use std::time::Duration;
 
@@ -334,17 +446,13 @@ mod tests {
         let t4 = r.append_event(&json!({"_type": "d"})).unwrap();
         assert_eq!(t4, t2 + 10_001, "monotonic guard must use last+1");
 
-        // Malformed lines are skipped by the scan.
-        append_raw(&r, "not-a-record\n");
-        append_raw(&r, "abc\0def\n");
-
         let mut seen = Vec::new();
         r.scan_from(0, |ts, json| {
             seen.push((ts, json.to_string()));
             Ok(())
         })
         .unwrap();
-        assert_eq!(seen.len(), 4, "malformed lines must be skipped");
+        assert_eq!(seen.len(), 4);
         assert_eq!(seen[0].0, t1);
         assert!(seen[1].1.contains("\"_type\":\"b\""));
         assert_eq!(seen[3].0, t4);
@@ -360,6 +468,158 @@ mod tests {
 
         assert_eq!(r.last_ts().unwrap(), t4);
         assert_eq!(r.line_count().unwrap(), 4);
+    }
+
+    #[test]
+    fn scan_halts_at_first_bad_line_with_location() {
+        let dir = TestDir::new("halt-mid");
+        let r = Rollout::create(&dir.0, &uuid::Uuid::now_v7().to_string()).unwrap();
+        r.append_event(&json!({"_type": "a"})).unwrap();
+        r.append_event(&json!({"_type": "b"})).unwrap();
+
+        let mut raw = String::new();
+        raw.push_str("oops\n");
+        raw.push_str(&format!(
+            "{}\0{}\n",
+            1_717_238_400_009u64,
+            json!({"_type": "c"})
+        ));
+        append_raw(&r, &raw);
+
+        let mut seen = Vec::new();
+        let err = r
+            .scan_from(0, |ts, json| {
+                seen.push((ts, json.to_string()));
+                Ok(())
+            })
+            .unwrap_err();
+        let corrupted = err
+            .downcast_ref::<RolloutCorrupted>()
+            .expect("scan must fail with RolloutCorrupted");
+        assert_eq!(corrupted.line_no, 3);
+        assert_eq!(corrupted.kind, LineError::NotDigit);
+        // byte_offset points at the start of the offending line
+        assert_eq!(
+            corrupted.byte_offset,
+            (std::fs::read(r.path()).unwrap().len() - raw.len()) as u64
+        );
+        // Data BEFORE the corruption point was served; the tail was not.
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn scan_halts_when_first_line_has_no_ts() {
+        let dir = TestDir::new("halt-first");
+        let r = Rollout::create(&dir.0, &uuid::Uuid::now_v7().to_string()).unwrap();
+        // A file that has no started ts is a bad file.
+        append_raw(&r, "not-a-record\n");
+        let err = r.scan_from(0, |_, _| Ok(())).unwrap_err();
+        let corrupted = err.downcast_ref::<RolloutCorrupted>().unwrap();
+        assert_eq!(corrupted.line_no, 1);
+        assert_eq!(corrupted.byte_offset, 0);
+    }
+
+    #[test]
+    fn scan_halts_at_raw_newline_mid_json() {
+        let dir = TestDir::new("halt-raw-nl");
+        let r = Rollout::create(&dir.0, &uuid::Uuid::now_v7().to_string()).unwrap();
+        // Realistic corruption: a raw \n inside JSON (outside a string) splits
+        // the record into two physical lines; the second starts with
+        // non-digits, so the scan must halt there.
+        append_raw(
+            &r,
+            "1717238400000\0{\"_type\":\"assistant\",\n\"text\":\"x\"}\n",
+        );
+        let mut seen = Vec::new();
+        let err = r
+            .scan_from(0, |ts, json| {
+                seen.push(ts);
+                assert!(json.starts_with("{\"_type\":\"assistant\""), "{json}");
+                Ok(())
+            })
+            .unwrap_err();
+        let corrupted = err.downcast_ref::<RolloutCorrupted>().unwrap();
+        assert_eq!(corrupted.line_no, 2);
+        assert_eq!(seen.len(), 1, "line 1 has a valid prefix and is served");
+    }
+
+    #[test]
+    fn scan_accepts_crash_truncated_final_line() {
+        let dir = TestDir::new("truncated-final");
+        let r = Rollout::create(&dir.0, &uuid::Uuid::now_v7().to_string()).unwrap();
+        let t1 = r.append_event(&json!({"_type": "a"})).unwrap();
+        // Crash during the final write: valid ts prefix, incomplete JSON, no
+        // trailing newline. Accepted — the client's lenient path handles it.
+        append_raw(&r, "1717238400009\0{\"_type\":\"assistant\",\"text\":\"par");
+        let mut seen = Vec::new();
+        r.scan_from(0, |ts, json| {
+            seen.push((ts, json.to_string()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1].0, 1_717_238_400_009);
+        assert!(seen[1].1.starts_with("{\"_type\":\"assistant\""));
+        assert_eq!(r.last_ts().unwrap(), 1_717_238_400_009);
+        assert_eq!(seen[0].0, t1);
+    }
+
+    #[test]
+    fn scan_rejects_bad_prefix_final_line_without_newline() {
+        let dir = TestDir::new("bad-final");
+        let r = Rollout::create(&dir.0, &uuid::Uuid::now_v7().to_string()).unwrap();
+        r.append_event(&json!({"_type": "a"})).unwrap();
+        append_raw(&r, "oops");
+        let err = r.scan_from(0, |_, _| Ok(())).unwrap_err();
+        let corrupted = err.downcast_ref::<RolloutCorrupted>().unwrap();
+        assert_eq!(corrupted.line_no, 2);
+    }
+
+    #[test]
+    fn last_ts_line_count_and_title_halt_on_corruption() {
+        let dir = TestDir::new("halt-helpers");
+        let r = Rollout::create(&dir.0, &uuid::Uuid::now_v7().to_string()).unwrap();
+        r.append_event(&json!({"_type": "session_meta", "title": "t"}))
+            .unwrap();
+        append_raw(&r, "abc\0def\n");
+        for op in [
+            |r: &Rollout| r.last_ts().map(|_| ()),
+            |r: &Rollout| r.line_count().map(|_| ()),
+            |r: &Rollout| r.title().map(|_| ()),
+        ] {
+            let err = op(&r).unwrap_err();
+            assert!(
+                err.downcast_ref::<RolloutCorrupted>().is_some(),
+                "helpers must halt with RolloutCorrupted: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn sessions_index_skips_non_uuid_filenames() {
+        let dir = TestDir::new("index-filter");
+        let id = uuid::Uuid::now_v7().to_string();
+        let r = Rollout::create(&dir.0, &id).unwrap();
+        r.append_event(&json!({"_type": "session_meta", "title": "ok"}))
+            .unwrap();
+        fs::write(dir.0.join("garbage.jsonlts"), "junk\n").unwrap();
+        fs::write(dir.0.join("not-a-uuid.jsonlts"), "1717238400000\0{}\n").unwrap();
+
+        let idx = sessions_index(&dir.0).unwrap();
+        assert_eq!(idx.len(), 1);
+        assert_eq!(idx[0].uuid, id);
+    }
+
+    #[test]
+    fn sessions_index_halts_on_corrupt_rollout() {
+        let dir = TestDir::new("index-halt");
+        let id = uuid::Uuid::now_v7().to_string();
+        let r = Rollout::create(&dir.0, &id).unwrap();
+        r.append_event(&json!({"_type": "session_meta"})).unwrap();
+        append_raw(&r, "corrupt line\n");
+        let err = sessions_index(&dir.0).unwrap_err();
+        let corrupted = err.downcast_ref::<RolloutCorrupted>().unwrap();
+        assert_eq!(corrupted.line_no, 2);
     }
 
     #[test]
@@ -454,5 +714,35 @@ mod tests {
     #[test]
     fn default_dir_is_axonerai_sessions() {
         assert_eq!(default_dir(), PathBuf::from(".axonerai/sessions"));
+    }
+
+    #[test]
+    fn is_session_id_accepts_lowercase_v7() {
+        assert!(is_session_id("01890a5d-ac96-774b-bcce-b302099a8057"));
+        assert!(is_session_id("ffffffff-ffff-7fff-abcd-0123456789ab"));
+    }
+
+    #[test]
+    fn is_session_id_rejects_adversarial_shapes() {
+        // v4 uuid
+        assert!(!is_session_id("550e8400-e29b-41d4-a716-446655440000"));
+        // uppercase
+        assert!(!is_session_id("01890A5D-AC96-774B-BCCE-B302099A8057"));
+        // wrong length
+        assert!(!is_session_id("01890a5d-ac96-774b-bcce-b302099a805"));
+        assert!(!is_session_id("01890a5d-ac96-774b-bcce-b302099a80577"));
+        // missing hyphens
+        assert!(!is_session_id("01890a5dac96774bbcceb302099a8057"));
+        // path traversal
+        assert!(!is_session_id("../../etc/passwd"));
+        assert!(!is_session_id("..\\..\\x"));
+        // junk
+        assert!(!is_session_id(""));
+        assert!(!is_session_id("sess_1"));
+        // v7 shape but bad variant nibble (5th group / 4th group start)
+        assert!(!is_session_id("01890a5d-ac96-774b-0cce-b302099a8057"));
+        assert!(!is_session_id("01890a5d-ac96-774b-cce-b302099a8057"));
+        // non-v7 version nibble in 3rd group
+        assert!(!is_session_id("01890a5d-ac96-674b-bcce-b302099a8057"));
     }
 }
