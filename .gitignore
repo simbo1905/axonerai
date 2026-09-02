@@ -7,4 +7,5 @@ server_direct.log
 .test_dir
 .axonerai/sessions/
 .axonerai/settings.jsonc
+.axonerai/scratch/
 web/assets/*.d.ts

@@ -90,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(Calculator));
-    tools.register(Box::new(WriteFile));
+    tools.register(Box::new(WriteFile::default()));
     // Only register the Tavily-backed web tools when an API key is available.
     if env::var("TAVILY_API_KEY").is_ok() {
         tools.register(Box::new(WebSearch::new()));

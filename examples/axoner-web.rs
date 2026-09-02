@@ -1064,7 +1064,7 @@ async fn send_error(state: &AppState, socket: &mut WebSocket, id: Option<&str>, 
 fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(Calculator));
-    registry.register(Box::new(WriteFile));
+    registry.register(Box::new(WriteFile::default()));
 
     // Only register the Tavily-backed web tools when an API key is available.
     if std::env::var("TAVILY_API_KEY").is_ok() {
