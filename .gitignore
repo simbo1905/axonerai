@@ -3,3 +3,5 @@
 server_direct.log
 .tmp
 .test_dir
+.axonerai/sessions/
+.axonerai/settings.jsonc

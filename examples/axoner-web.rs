@@ -1,23 +1,31 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
+use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::body::Body;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use axonerai::rollout::{self, Rollout, SessionInfo};
 use axonerai::tools::{Calculator, WebFetch, WebSearch, WriteFile};
 use axonerai::wire::{ClientMsg, ServerMsg};
 use axonerai::{
     Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
 };
+
+/// Max characters for large string fields on egress to the browser. The
+/// rollout always stores FULL text; abridge is applied only when serving.
+const EGRESS_ABRIDGE_CHARS: usize = 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "agt", version, about = "AxonerAI tooling")]
@@ -52,7 +60,25 @@ enum Commands {
         /// Model ID to use (overrides provider default)
         #[arg(long)]
         model: Option<String>,
+
+        /// Continue the most recent session
+        #[arg(short = 'c', long = "continue")]
+        continue_: bool,
+
+        /// Reopen a specific session by uuid
+        #[arg(short = 's', long = "session")]
+        session: Option<String>,
     },
+    Session {
+        #[command(subcommand)]
+        action: SessionAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionAction {
+    /// List sessions, newest first
+    List,
 }
 
 #[derive(Clone)]
@@ -60,6 +86,8 @@ struct AppState {
     web_root: PathBuf,
     agent: Option<Arc<Agent>>,
     verbose: u8,
+    rollout: Arc<Rollout>,
+    session_id: String,
 }
 
 /// Load environment variables from a .env file if it exists
@@ -96,6 +124,13 @@ fn load_env_file() {
     }
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     load_env_file();
@@ -118,7 +153,72 @@ async fn main() -> anyhow::Result<()> {
             web_root,
             provider,
             model,
-        } => serve(host, port, web_root, provider, model).await,
+            continue_,
+            session,
+        } => {
+            serve(
+                host,
+                port,
+                web_root,
+                provider,
+                model,
+                continue_,
+                session,
+                cli.verbose,
+            )
+            .await
+        }
+        Commands::Session { action } => match action {
+            SessionAction::List => session_list(),
+        },
+    }
+}
+
+/// Resolve (or create) the session rollout for this server run.
+///
+/// `--session <uuid>` opens that rollout (error if missing); `--continue`
+/// opens the newest rollout by index (error if none); otherwise a fresh
+/// session (uuid v7, default title = rightmost cwd component) is created and
+/// a provisional `session_meta` event (serde JSON; JTD formalisation is a
+/// later item) is written as its first line.
+fn resolve_session(
+    sessions_dir: &std::path::Path,
+    continue_: bool,
+    session: Option<String>,
+) -> anyhow::Result<(Arc<Rollout>, String)> {
+    match session {
+        Some(id) => {
+            let rollout = Rollout::open(sessions_dir, &id)
+                .with_context(|| format!("session rollout not found: {id}"))?;
+            Ok((Arc::new(rollout), id))
+        }
+        None if continue_ => {
+            let index = rollout::sessions_index(sessions_dir).with_context(|| {
+                format!("failed to index sessions dir {}", sessions_dir.display())
+            })?;
+            let newest = index
+                .first()
+                .with_context(|| format!("no sessions found in {}", sessions_dir.display()))?;
+            let id = newest.uuid.clone();
+            let rollout = Rollout::open(sessions_dir, &id)
+                .with_context(|| format!("session rollout not found: {id}"))?;
+            Ok((Arc::new(rollout), id))
+        }
+        None => {
+            let id = uuid::Uuid::now_v7().to_string();
+            let title = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "session".to_string());
+            let rollout = Rollout::create(sessions_dir, &id)?;
+            rollout.append_event(&serde_json::json!({
+                "_type": "session_meta",
+                "session_id": id.clone(),
+                "title": title,
+                "created_at": now_ms(),
+            }))?;
+            Ok((Arc::new(rollout), id))
+        }
     }
 }
 
@@ -128,6 +228,9 @@ async fn serve(
     web_root: Option<PathBuf>,
     provider_override: Option<String>,
     model_override: Option<String>,
+    continue_: bool,
+    session: Option<String>,
+    verbose: u8,
 ) -> anyhow::Result<()> {
     let host = host.unwrap_or_else(|| "127.0.0.1".to_string());
     let port = port.unwrap_or(0);
@@ -150,11 +253,15 @@ async fn serve(
 
     let agent = build_agent_from_config(&config, &provider_name, &model_id).ok();
 
-    let cli = Cli::parse();
+    let sessions_dir = rollout::default_dir();
+    let (session_rollout, session_id) = resolve_session(&sessions_dir, continue_, session)?;
+
     let state = AppState {
         web_root,
         agent,
-        verbose: cli.verbose,
+        verbose,
+        rollout: session_rollout,
+        session_id: session_id.clone(),
     };
 
     let assets_dir = state.web_root.join("assets");
@@ -167,6 +274,9 @@ async fn serve(
         .route("/", get(index))
         .route("/index.html", get(index))
         .route("/ws", get(ws_upgrade))
+        .route("/api/sessions", get(api_sessions))
+        .route("/api/session/:uuid", get(api_session_catchup))
+        .route("/api/session/:uuid/tail", get(api_session_tail))
         .nest_service("/assets", assets_service)
         .nest_service("/src", src_service)
         .nest_service("/test", test_service)
@@ -199,6 +309,7 @@ async fn serve(
     println!();
     println!("  Provider:   {}", provider_name);
     println!("  Model:      {}", model_id);
+    println!("  Session:    {session_id}");
     println!();
 
     axum::serve(listener, app)
@@ -206,6 +317,70 @@ async fn serve(
         .with_context(|| "server exited with error")?;
 
     Ok(())
+}
+
+/// `agt session list` — opencode-style padded table, newest first.
+fn session_list() -> anyhow::Result<()> {
+    let sessions_dir = rollout::default_dir();
+    let sessions = rollout::sessions_index(&sessions_dir)?;
+
+    if sessions.is_empty() {
+        println!(
+            "No sessions yet. Run `agt serve` to start one (rollouts live in {}).",
+            sessions_dir.display()
+        );
+        return Ok(());
+    }
+
+    let rows: Vec<(String, String, String)> = sessions
+        .iter()
+        .map(|s| (s.uuid.clone(), s.title.clone(), format_updated(s.updated)))
+        .collect();
+
+    let id_w = rows
+        .iter()
+        .map(|r| r.0.len())
+        .max()
+        .unwrap_or(0)
+        .max("Session ID".len());
+    let title_w = rows
+        .iter()
+        .map(|r| r.1.len())
+        .max()
+        .unwrap_or(0)
+        .max("Title".len());
+    let updated_w = rows
+        .iter()
+        .map(|r| r.2.len())
+        .max()
+        .unwrap_or(0)
+        .max("Updated".len());
+
+    println!(
+        "{:<id_w$}  {:<title_w$}  {:<updated_w$}",
+        "Session ID", "Title", "Updated"
+    );
+    for (id, title, updated) in &rows {
+        println!(
+            "{:<id_w$}  {:<title_w$}  {:<updated_w$}",
+            id, title, updated
+        );
+    }
+    Ok(())
+}
+
+/// Format an updated timestamp like `1:36 PM` for today, else
+/// `11:27 PM · 9/1/2026`.
+fn format_updated(updated_ms: u64) -> String {
+    let Some(utc) = chrono::DateTime::from_timestamp_millis(updated_ms as i64) else {
+        return String::from("?");
+    };
+    let dt = utc.with_timezone(&chrono::Local);
+    if dt.date_naive() == chrono::Local::now().date_naive() {
+        dt.format("%-I:%M %p").to_string()
+    } else {
+        format!("{} · {}", dt.format("%-I:%M %p"), dt.format("%-m/%-d/%Y"))
+    }
 }
 
 async fn index(State(state): State<AppState>) -> Response {
@@ -217,70 +392,165 @@ async fn index(State(state): State<AppState>) -> Response {
     }
 }
 
+/// GET /api/sessions — index of all rollouts, newest first.
+async fn api_sessions() -> Response {
+    let sessions: Vec<SessionInfo> =
+        rollout::sessions_index(&rollout::default_dir()).unwrap_or_default();
+    Json(sessions).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct CatchupQuery {
+    after: Option<u64>,
+}
+
+/// Prepare one rollout line for egress to the browser: `{"_ts":<ts>, ...event}`,
+/// with conservative abridging of large tool-trace-ish string fields.
+fn egress_line(ts: u64, json: &str) -> anyhow::Result<String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(json).with_context(|| "rollout line is not valid JSON")?;
+
+    if !value.is_object() {
+        return Ok(format!(r#"{{"_ts":{ts},"value":{json}}}"#));
+    }
+
+    let mut abridged = false;
+    if let serde_json::Value::Object(map) = &mut value {
+        for key in ["text", "args", "result"] {
+            if let Some(serde_json::Value::String(s)) = map.get_mut(key) {
+                if s.chars().count() > EGRESS_ABRIDGE_CHARS {
+                    *s = rollout::abridge(s, EGRESS_ABRIDGE_CHARS);
+                    abridged = true;
+                }
+            }
+        }
+        if abridged {
+            map.insert("abridged".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+
+    let body = serde_json::to_string(&value)?;
+    let inner = body
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or_default();
+    if inner.is_empty() {
+        Ok(format!(r#"{{"_ts":{ts}}}"#))
+    } else {
+        Ok(format!(r#"{{"_ts":{ts},{inner}}}"#))
+    }
+}
+
+/// GET /api/session/:uuid?after=<ms> — chunked ndjson catch-up stream.
+///
+/// Streams `{"_ts":<ms>, ...event}` lines (ts > after) straight off a
+/// streaming scan of the rollout; the file is never loaded whole.
+async fn api_session_catchup(
+    Path(uuid): Path<String>,
+    Query(query): Query<CatchupQuery>,
+) -> Response {
+    let after = query.after.unwrap_or(0);
+    let sessions_dir = rollout::default_dir();
+    let session_rollout = match Rollout::open(&sessions_dir, &uuid) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::NOT_FOUND, "session not found").into_response(),
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(64);
+    tokio::task::spawn_blocking(move || {
+        let result = session_rollout.scan_from(after, |ts, json| {
+            let line = egress_line(ts, json)?;
+            tx.blocking_send(Ok(line))
+                .map_err(|_| anyhow::anyhow!("catch-up stream closed"))?;
+            Ok(())
+        });
+        if let Err(e) = result {
+            let _ = tx.blocking_send(Err(std::io::Error::other(e.to_string())));
+        }
+    });
+
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+
+    match Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/x-ndjson")
+        .body(Body::from_stream(stream))
+    {
+        Ok(response) => response.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// GET /api/session/:uuid/tail — `{"_ts":<last_ts>}` for frontier checks.
+async fn api_session_tail(Path(uuid): Path<String>) -> Response {
+    let sessions_dir = rollout::default_dir();
+    match Rollout::open(&sessions_dir, &uuid).and_then(|r| r.last_ts()) {
+        Ok(ts) => Json(serde_json::json!({ "_ts": ts })).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "session not found").into_response(),
+    }
+}
+
 async fn ws_upgrade(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(move |socket| ws_session(state, socket))
 }
 
 async fn ws_session(state: AppState, mut socket: WebSocket) {
-    let _ = socket
-        .send(WsMessage::Text(
-            serde_json::to_string(&ServerMsg::Ready {
-                version: env!("CARGO_PKG_VERSION"),
-                websocket_path: "/ws",
-            })
-            .unwrap_or_else(|_| {
-                r#"{"_type":"ready","version":"unknown","websocket_path":"/ws"}"#.to_string()
-            }),
-        ))
-        .await;
+    info!("[{}] ws client connected", state.session_id);
+    // Durable-first: append the ready frame to the rollout before sending it.
+    let ready_value = serde_json::to_value(&ServerMsg::Ready {
+        version: env!("CARGO_PKG_VERSION"),
+        websocket_path: "/ws",
+    })
+    .unwrap_or_else(
+        |_| serde_json::json!({"_type":"ready","version":"unknown","websocket_path":"/ws"}),
+    );
+    let _ = state.rollout.append_event(&ready_value);
+    let _ = socket.send(WsMessage::Text(ready_value.to_string())).await;
 
     while let Some(Ok(msg)) = socket.recv().await {
         let WsMessage::Text(text) = msg else {
             continue;
         };
 
-        let parsed: Result<ClientMsg, _> = serde_json::from_str(&text);
-        let client_msg = match parsed {
+        let value: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                send_error(&state, &mut socket, None, &format!("invalid message: {e}")).await;
+                continue;
+            }
+        };
+
+        // Durable-first: record the client frame before acting on it.
+        if value.is_object() {
+            let _ = state.rollout.append_event(&value);
+        }
+
+        let client_msg: ClientMsg = match serde_json::from_value(value) {
             Ok(m) => m,
             Err(e) => {
-                let _ = socket
-                    .send(WsMessage::Text(
-                        serde_json::to_string(&ServerMsg::Error {
-                            id: None,
-                            message: &format!("invalid message: {e}"),
-                        })
-                        .unwrap_or_else(|_| {
-                            r#"{"_type":"error","message":"invalid message"}"#.to_string()
-                        }),
-                    ))
-                    .await;
+                send_error(&state, &mut socket, None, &format!("invalid message: {e}")).await;
                 continue;
             }
         };
 
         match client_msg {
             ClientMsg::Ping { id } => {
-                let _ = socket
-                    .send(WsMessage::Text(
-                        serde_json::to_string(&ServerMsg::Pong { id: id.as_deref() })
-                            .unwrap_or_else(|_| r#"{"_type":"pong"}"#.to_string()),
-                    ))
-                    .await;
+                let pong_value = serde_json::to_value(&ServerMsg::Pong { id: id.as_deref() })
+                    .unwrap_or_else(|_| serde_json::json!({"_type":"pong"}));
+                let _ = state.rollout.append_event(&pong_value);
+                let _ = socket.send(WsMessage::Text(pong_value.to_string())).await;
             }
             ClientMsg::Prompt { id, text } => {
                 let Some(agent) = &state.agent else {
-                    let _ = socket
-                        .send(WsMessage::Text(
-                            serde_json::to_string(&ServerMsg::Error {
-                                id: id.as_deref(),
-                                message:
-                                    "No provider configured. Set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY.",
-                            })
-                            .unwrap_or_else(|_| {
-                                r#"{"_type":"error","message":"No provider configured"}"#.to_string()
-                            }),
-                        ))
-                        .await;
+                    send_error(
+                        &state,
+                        &mut socket,
+                        id.as_deref(),
+                        "No provider configured. Set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY.",
+                    )
+                    .await;
                     continue;
                 };
 
@@ -310,36 +580,39 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                             }
                         }
 
+                        let assistant_value = serde_json::to_value(&ServerMsg::Assistant {
+                            id: id.as_deref(),
+                            text: &reply,
+                        })
+                        .unwrap_or_else(|_| {
+                            serde_json::json!({"_type":"assistant","text":"(serialization error)"})
+                        });
+                        let _ = state.rollout.append_event(&assistant_value);
                         let _ = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&ServerMsg::Assistant {
-                                    id: id.as_deref(),
-                                    text: &reply,
-                                })
-                                .unwrap_or_else(|_| {
-                                    r#"{"_type":"assistant","text":"(serialization error)"}"#
-                                        .to_string()
-                                }),
-                            ))
+                            .send(WsMessage::Text(assistant_value.to_string()))
                             .await;
                     }
                     Err(e) => {
-                        let _ = socket
-                            .send(WsMessage::Text(
-                                serde_json::to_string(&ServerMsg::Error {
-                                    id: id.as_deref(),
-                                    message: &format!("agent error: {e}"),
-                                })
-                                .unwrap_or_else(|_| {
-                                    r#"{"_type":"error","message":"agent error"}"#.to_string()
-                                }),
-                            ))
-                            .await;
+                        send_error(
+                            &state,
+                            &mut socket,
+                            id.as_deref(),
+                            &format!("agent error: {e}"),
+                        )
+                        .await;
                     }
                 }
             }
         }
     }
+}
+
+/// Build, append (durable-first) and send an error frame.
+async fn send_error(state: &AppState, socket: &mut WebSocket, id: Option<&str>, message: &str) {
+    let error_value = serde_json::to_value(&ServerMsg::Error { id, message })
+        .unwrap_or_else(|_| serde_json::json!({"_type":"error","message":"error"}));
+    let _ = state.rollout.append_event(&error_value);
+    let _ = socket.send(WsMessage::Text(error_value.to_string())).await;
 }
 
 fn build_agent_from_config(

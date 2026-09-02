@@ -8,6 +8,7 @@ pub mod openai;
 pub mod opencode;
 pub mod prompt;
 pub mod provider;
+pub mod rollout;
 pub mod session;
 pub mod tool;
 pub mod tools;
