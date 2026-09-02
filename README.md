@@ -162,6 +162,52 @@ The web demo requires:
 - `MISTRAL_API_KEY`, `GROQ_API_KEY`, or `OPENCODE_API_KEY` environment variable (or in `.env` file)
 - Optional: `TAVILY_API_KEY` for the web tools (WebSearch and WebFetch)
 
+## Sessions & Rollouts
+
+- Every session gets a time-ordered UUID (uuid v7).
+- Rollouts are append-only logs at `.axonerai/sessions/<uuid>.jsonlts` (gitignored).
+  Each line is `<epoch_ms>\0<json>\n` — full fidelity. The browser only ever
+  receives ≤1024-byte abridged tool payloads; the rollout keeps everything.
+- CLI:
+  - `session list` — opencode-style padded table of sessions, newest first.
+  - `serve -c` / `serve --continue` — reopen the most recent session.
+  - `serve -s <uuid>` / `serve --session <uuid>` — reopen a specific session.
+- UI: `?s=<uuid>` in the URL boots the client and catches up history from the
+  server from the IndexedDB frontier (only lines newer than the last stored
+  timestamp are replayed).
+- `/rename <title>` renames the session (persisted to the rollout).
+
+## Slash commands & side panel
+
+The right-hand TUI-style side panel renders slash-command responses and status
+trees (Context, MCP, LSP, Todo, Built-ins). Commands are typed in the composer:
+
+- `/model` — show the active provider/model.
+- `/built-ins` — open the Built-ins tree and toggle tools per session.
+- `/verbose` — toggle verbose output rendering (tool-call trace lines).
+- `/rename <title>` — rename the session.
+- `/help` — list the commands.
+
+Responses go to the panel; only one tree is expanded at a time (the others
+collapse).
+
+## Control plane
+
+Control-plane state is REST; the chat data plane is the WebSocket:
+
+- `GET /api/state` — provider/model/session/repo/context/tools/MCP snapshot.
+- `POST /api/tools` — `{"name": "<tool>", "enabled": bool}` toggle.
+- `GET /api/sessions` — index of all rollouts, newest first.
+- `GET /api/session/{uuid}?after=<ms>` — chunked line-format catch-up stream.
+- `GET /openapi.yaml` — OpenAPI 3.1 document for the REST API.
+
+Tool suppression via `/built-ins` persists to `.axonerai/settings.jsonc`
+(gitignored), so it survives server restarts.
+
+Note: `tavily_search`/`tavily_extract` appear as Tavily-MCP tools when
+`TAVILY_API_KEY` is set — a facade implemented as built-in Rust tools; there is
+no MCP host process.
+
 ## System Prompts
 
 - `prompts/base.txt` is the one true base prompt.

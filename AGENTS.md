@@ -39,6 +39,19 @@ Working rules for agents operating in this repository.
   contract), `web/src/dispatch.mjs` (business-logic `_type` switch on validated
   frozen events), `web/src/store.mjs` (immutable append-only log; the seam for a
   future worker/BroadcastChannel/IndexedDB transport).
+- `web/src/history.mjs` keeps a per-session IndexedDB log; on `?s=<uuid>` boot
+  it replays locally and catches up from the server using the frontier
+  timestamp (only newer lines are fetched).
+- Wire-line parsing (`<ts>\0<json>`) and abridged-JSON pretty-printing run in
+  the browser via WASM modules built from shared Rust (`make wasm-lineformat`,
+  `make wasm-pretty` → committed glue in `web/assets/`); the same line-format
+  logic backs the server rollouts.
+- `web/src/panel` and `web/src/commands.mjs` talk to the control plane
+  (REST `/api/*`), which is deliberately separate from the chat data plane (WS).
+- Full-vs-abridged invariant: the rollout stores full-fidelity tool payloads;
+  the browser only ever receives ≤1024-byte abridged payloads.
+- WS egress for history/catch-up is line-format `ts\0type\0text` — the `_type`
+  segment precedes the JSON payload (payload always starts with `{`).
 
 ## Task delegation process
 

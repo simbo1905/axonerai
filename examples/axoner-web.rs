@@ -508,14 +508,30 @@ struct StateSnapshot {
     todo: serde_json::Value,
 }
 
+/// Rename-aware session title for the control-plane snapshot: look the
+/// session up in the sessions index (last `session_rename` wins), falling
+/// back to the meta-only scan, then the session id.
+fn session_title(state: &AppState) -> String {
+    if let Some(dir) = state.rollout.path().parent() {
+        if let Ok(sessions) = rollout::sessions_index(dir) {
+            if let Some(info) = sessions.iter().find(|s| s.uuid == state.session_id) {
+                return info.title.clone();
+            }
+        }
+    }
+    state
+        .rollout
+        .title()
+        .unwrap_or_else(|_| state.session_id.clone())
+}
+
 /// GET /api/state — provider/model/session/repo/context/tools/mcp snapshot.
 /// Context tokens are the running rollout-bytes counter divided by 4 (floor);
 /// it is NOT a rescan of the rollout.
 async fn api_state(State(state): State<AppState>) -> Response {
-    let title = state
-        .rollout
-        .title()
-        .unwrap_or_else(|_| state.session_id.clone());
+    // Title resolution must match the sessions index: the last `session_rename`
+    // wins over the first `session_meta` (Rollout::title() only sees the meta).
+    let title = session_title(&state);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let snapshot = StateSnapshot {
         provider: state.provider.clone(),

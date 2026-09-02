@@ -10,7 +10,8 @@ import {
 } from "/src/lineformat.mjs";
 import {
   appendEvents,
-  getFrontier,
+  frontierOf,
+  getAll,
   mergeCatchup,
   openHistory,
 } from "/src/history.mjs";
@@ -176,7 +177,15 @@ export class AgtApp extends HTMLElement {
     try {
       await initLineformat();
       const db = await this.#history();
-      const frontier = await getFrontier(db, sessionId);
+      // Replay the local IndexedDB log first, then catch up from the server
+      // after the frontier — only newer lines are fetched (no duplicates).
+      const local = await getAll(db, sessionId);
+      const frontier = frontierOf(local);
+      if (local.length > 0) {
+        this.#store.appendAll(
+          local.map((record) => deepFreeze(/** @type {ChatEvent} */ (record.event))),
+        );
+      }
       const res = await fetch(
         `/api/session/${encodeURIComponent(sessionId)}?after=${frontier}`,
       );

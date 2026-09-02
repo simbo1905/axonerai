@@ -91,6 +91,12 @@ export class AgtComposer extends HTMLElement {
     if (!textarea) return;
     const text = textarea.value.trim();
     if (!text) return;
+    // Slash-leading input is control plane on every send path (Enter keydown
+    // routes through #runParsed too); only chat reaches the model.
+    if (text.startsWith("/")) {
+      this.#runParsed(text);
+      return;
+    }
     textarea.value = "";
     this.dispatchEvent(
       new CustomEvent("agt-send", { detail: { text }, bubbles: true, composed: true }),
