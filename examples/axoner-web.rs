@@ -339,6 +339,7 @@ async fn serve(
     let app = Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
+        .route("/console.html", get(console_page))
         .route("/ws", get(ws_upgrade))
         .route("/api/sessions", get(api_sessions))
         .route("/api/session/:uuid", get(api_session_catchup))
@@ -458,6 +459,19 @@ async fn index(State(state): State<AppState>) -> Response {
     match tokio::fs::read_to_string(&disk_path).await {
         Ok(html) => Html(html).into_response(),
         Err(_) => Html(include_str!("../web/index.html").to_string()).into_response(),
+    }
+}
+
+/// `GET /console.html` — the devtools console popup (item32). Mirrors
+/// `index`: disk copy first, embedded copy as the fallback. Without this
+/// route the `.fallback(get(index))` would serve the CHAT page for
+/// `/console.html`, breaking the `/console` popup on this origin.
+async fn console_page(State(state): State<AppState>) -> Response {
+    let disk_path = state.web_root.join("console.html");
+
+    match tokio::fs::read_to_string(&disk_path).await {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => Html(include_str!("../web/console.html").to_string()).into_response(),
     }
 }
 
