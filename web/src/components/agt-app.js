@@ -1,6 +1,7 @@
 // @ts-check
 import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
 import { dispatch, registerHandler } from "../dispatch.mjs";
+import { createStore } from "../store.mjs";
 import "./agt-status.js";
 import "./agt-chat-log.js";
 import "./agt-composer.js";
@@ -27,8 +28,8 @@ async function waitForAgtClient() {
 }
 
 export class AgtApp extends HTMLElement {
-  /** @type {Readonly<ChatEvent[]>} */
-  #events = deepFreeze([]);
+  /** In-memory append-only store of frozen chat events (server + prompt). */
+  #store = createStore();
   /** @type {Readonly<StatusValue>} */
   #status = deepFreeze({ state: "connecting" });
   /** @type {Set<string>} */
@@ -39,7 +40,7 @@ export class AgtApp extends HTMLElement {
 
   /** Frozen chat-state snapshot (server events + prompt records). */
   get state() {
-    return this.#events;
+    return this.#store.getEvents();
   }
 
   get status() {
@@ -60,6 +61,11 @@ export class AgtApp extends HTMLElement {
         }
       });
       this.replaceChildren(status, log, composer);
+
+      // The store drives re-renders: every append notifies, and the
+      // subscription re-renders from the new frozen snapshot. #status and
+      // #pending changes still render manually below.
+      this.#store.subscribe(() => this.#render());
 
       this.#wireClient();
     }
@@ -151,7 +157,6 @@ export class AgtApp extends HTMLElement {
 
     this.#pending.add(id);
     this.#pushEvent(prompt);
-    this.#render();
 
     try {
       await client.sendPrompt(text, id);
@@ -176,13 +181,13 @@ export class AgtApp extends HTMLElement {
   }
 
   /**
-   * Replace the chat state with a NEW frozen array (never mutate in place).
+   * Append a validated, deep-frozen event to the store; the store's notify
+   * subscription re-renders from the new frozen snapshot.
    *
    * @param {ChatEvent} event
    */
   #pushEvent(event) {
-    this.#events = deepFreeze([...this.#events, event]);
-    this.#render();
+    this.#store.append(event);
   }
 
   /**
@@ -202,7 +207,7 @@ export class AgtApp extends HTMLElement {
     const log = /** @type {import("./agt-chat-log.js").AgtChatLog} */ (
       this.querySelector("agt-chat-log")
     );
-    if (log) log.events = this.#events;
+    if (log) log.events = this.#store.getEvents();
 
     const composer = /** @type {import("./agt-composer.js").AgtComposer} */ (
       this.querySelector("agt-composer")

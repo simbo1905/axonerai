@@ -5,7 +5,7 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts
+.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs
 
 # Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
 # Must run before `cargo build`: src/prompt.rs embeds
@@ -35,3 +35,27 @@ $(OUT_DIR)/validators.mjs: $(VALIDATORS)
 
 clean-validators:
 	rm -rf $(OUT_DIR)
+
+init:
+	@command -v luarocks >/dev/null 2>&1 || { echo "ERROR: install luarocks (brew install luarocks)"; exit 1; }
+	@luarocks --lua-version=5.1 list tl 2>/dev/null | grep -q "^tl$$" \
+		|| luarocks --lua-version=5.1 install tl
+	@echo "tl (Teal, LuaJIT 5.1 ABI): OK"
+
+check:
+	@eval "$$(luarocks --lua-version=5.1 path)" && tl check tooling/lib/*.tl
+
+build-server:
+	cargo build --release --features web --example axoner-web
+
+serve-up:
+	@tooling/serve.lua up $(PROVIDER) $(MODEL) $(PORT)
+
+serve-down:
+	@tooling/serve.lua down $(PROVIDER) $(MODEL) $(PORT)
+
+serve-status:
+	@tooling/serve.lua status
+
+serve-logs:
+	@tooling/serve.lua logs $(PROVIDER) $(MODEL) $(PORT)

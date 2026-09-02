@@ -13,6 +13,13 @@ Working rules for agents operating in this repository.
   `matching`/`version_prefix`/`asset_pattern` options are needed.
 - Scratch files go in `.tmp/` (gitignored). **Avoid `/tmp`** — it trips sandbox
   permission errors on this host; use `.tmp/` for all scratch output.
+- `tooling/serve.lua` manages local `axoner-web` server processes, one per
+  (provider, model, port), with pidfiles/logs in `.tmp/run/`. Use the Makefile
+  thin wrappers: `make serve-up PROVIDER=… MODEL=… [PORT=…]`, `serve-down`
+  (`PORT=all` or `down-all` stops everything), `serve-status`, `serve-logs`.
+  `make build-server` builds the release binary; `make check` type-checks the
+  Teal tooling. Omitted PORT derives deterministically: 9300 + hash of
+  `provider--model` % 500.
 
 ## Web UI conventions
 
