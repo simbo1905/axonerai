@@ -1,0 +1,17 @@
+[package]
+name = "pretty-json"
+version = "0.1.0"
+edition = "2021"
+description = "Lenient pretty-printer for well-formed or abridged (truncated) JSON, compiled to WASM"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.127"
+
+[dev-dependencies]
+# preserve_order keeps Value key insertion order so oracle comparisons are not
+# silently alphabetized by serde_json's BTreeMap.
+serde_json = { version = "1", features = ["preserve_order"] }

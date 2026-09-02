@@ -5,7 +5,7 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals
+.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty
 
 # Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
 # Must run before `cargo build`: src/prompt.rs embeds
@@ -47,6 +47,15 @@ check:
 
 build-server:
 	cargo build --release --features web --example axoner-web
+
+# Build the abridged-JSON pretty-printer for the browser: release wasm32 build
+# plus wasm-bindgen glue. The generated web/assets/pretty-json.js and
+# pretty-json_bg.wasm are committed (zero-node deploy). The wasm-bindgen-cli
+# version must equal the wasm-bindgen crate version pinned in
+# wasm/pretty-json/Cargo.toml (currently 0.2.127).
+wasm-pretty:
+	cargo build --manifest-path wasm/pretty-json/Cargo.toml --release --target wasm32-unknown-unknown
+	wasm-bindgen --target web wasm/pretty-json/target/wasm32-unknown-unknown/release/pretty_json.wasm --out-dir web/assets --out-name pretty-json
 
 serve-up:
 	@tooling/serve.lua up $(PROVIDER) $(MODEL) $(PORT)

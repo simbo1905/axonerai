@@ -34,6 +34,12 @@ declare global {
       fail: number;
       details: Array<{ name: string; ok: boolean; error?: string }>;
     };
+    /** Headless pretty-printer smoke results (pretty.headless.mjs). */
+    __PRETTY_TEST_RESULTS__?: {
+      pass: number;
+      fail: number;
+      details: Array<{ name: string; ok: boolean; error?: string }>;
+    };
     __UI_STUB__?: {
       handlers: {
         onOpen(): void;
