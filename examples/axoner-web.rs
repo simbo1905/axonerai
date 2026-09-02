@@ -25,7 +25,10 @@ use axonerai::tools::{
     Calculator, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
 use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
-use axonerai::{Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider};
+use axonerai::{
+    Agent, AppConfig, FileSessionManager, GroqProvider, MistralProvider, OpenAIProvider,
+    OpenCodeProvider,
+};
 
 /// Max characters for large string fields on WS egress to the browser. The
 /// rollout always stores FULL text; abridge is applied only when serving.
@@ -307,10 +310,19 @@ async fn serve(
                 .to_string()
         });
     let registry = build_registry();
-    let agent = build_agent_from_config(&config, &provider_name, &model_id, registry.clone()).ok();
 
     let sessions_dir = rollout::default_dir();
     let (session_rollout, session_id) = resolve_session(&sessions_dir, continue_, session)?;
+
+    let agent = build_agent_from_config(
+        &config,
+        &provider_name,
+        &model_id,
+        registry.clone(),
+        &sessions_dir,
+        &session_id,
+    )
+    .ok();
 
     // Seed the context counter with the rollout size so bytes appended
     // before AppState existed (session creation + meta lines) are counted.
@@ -1059,6 +1071,8 @@ fn build_agent_from_config(
     provider_name: &str,
     model_id: &str,
     registry: ToolRegistry,
+    sessions_dir: &std::path::Path,
+    session_id: &str,
 ) -> anyhow::Result<Arc<Agent>> {
     let api_key = config.resolve_api_key(provider_name)?;
     let endpoint = config.endpoint(provider_name)?;
@@ -1101,11 +1115,14 @@ fn build_agent_from_config(
         &model_id,
     ));
 
+    let session_manager =
+        FileSessionManager::new(session_id.to_string(), sessions_dir.join("agent-state"))?;
+
     Ok(Arc::new(Agent::new(
         provider,
         registry,
         system_prompt,
-        None,
+        Some(session_manager),
     )))
 }
 

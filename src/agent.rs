@@ -2,7 +2,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::executor::{ToolExecutor, ToolResult};
+use crate::executor::ToolExecutor;
 use crate::file_session_manager::FileSessionManager;
 use crate::provider::{Message, Provider, StopReason};
 use crate::session::Session;
@@ -81,6 +81,8 @@ impl Agent {
         session.add_message(Message {
             role: "user".to_string(),
             content: user_prompt.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
         });
 
         let executor = ToolExecutor::new(&self.registry);
@@ -103,6 +105,8 @@ impl Agent {
                         session.add_message(Message {
                             role: "assistant".to_string(),
                             content: text.clone(),
+                            tool_calls: None,
+                            tool_call_id: None,
                         });
 
                         if let Some(ref sm) = self.file_session_manager {
@@ -117,8 +121,6 @@ impl Agent {
                 }
 
                 StopReason::ToolUse => {
-                    // LLM wants to use tools
-                    println!("Entered here");
                     if let Some(text) = &response.text {
                         println!("💭 Agent thinking: {}", text);
                     }
@@ -151,17 +153,21 @@ impl Agent {
                         tool_results.push(result);
                     }
 
-                    // Add assistant's tool use to messages
                     session.add_message(Message {
                         role: "assistant".to_string(),
-                        content: format_tool_use(&response.tool_calls),
+                        content: response.text.unwrap_or_default(),
+                        tool_calls: Some(response.tool_calls),
+                        tool_call_id: None,
                     });
 
-                    // Add tool results to messages
-                    session.add_message(Message {
-                        role: "user".to_string(),
-                        content: format_tool_results(&tool_results),
-                    });
+                    for result in &tool_results {
+                        session.add_message(Message {
+                            role: "tool".to_string(),
+                            content: result.result.clone(),
+                            tool_calls: None,
+                            tool_call_id: Some(result.tool_call_id.clone()),
+                        });
+                    }
 
                     println!();
                     // Continue the loop
@@ -188,27 +194,4 @@ impl Agent {
             self.max_iterations
         ))
     }
-}
-
-fn format_tool_use(tool_calls: &[crate::provider::ToolCall]) -> String {
-    tool_calls
-        .iter()
-        .map(|call| {
-            format!(
-                "Using tool '{}' with input: {}",
-                call.name,
-                serde_json::to_string(&call.input).unwrap_or_default()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Format tool results for feeding back to the LLM
-fn format_tool_results(results: &[ToolResult]) -> String {
-    results
-        .iter()
-        .map(|result| format!("Tool '{}' returned: {}", result.tool_name, result.result))
-        .collect::<Vec<_>>()
-        .join("\n")
 }

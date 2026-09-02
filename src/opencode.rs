@@ -165,3 +165,52 @@ struct FunctionCall {
     name: String,
     arguments: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::Message;
+
+    #[test]
+    fn extended_messages_serialize_to_openai_compatible_wire_shape() {
+        let messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: String::new(),
+                tool_calls: Some(vec![ToolCall {
+                    id: "call_1".to_string(),
+                    name: "calculator".to_string(),
+                    input: json!({"operation": "multiply", "a": 2.0, "b": 4.0}),
+                }]),
+                tool_call_id: None,
+            },
+            Message {
+                role: "tool".to_string(),
+                content: "8.0".to_string(),
+                tool_calls: None,
+                tool_call_id: Some("call_1".to_string()),
+            },
+        ];
+
+        let body = json!({"model": "test-model", "messages": messages});
+        let wire = &body["messages"];
+
+        let assistant = &wire[0];
+        assert_eq!(assistant["role"], "assistant");
+        let call = &assistant["tool_calls"][0];
+        assert_eq!(call["id"], "call_1");
+        assert_eq!(call["type"], "function");
+        assert_eq!(call["function"]["name"], "calculator");
+        let arguments: Value =
+            serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            arguments,
+            json!({"operation": "multiply", "a": 2.0, "b": 4.0})
+        );
+
+        let tool = &wire[1];
+        assert_eq!(tool["role"], "tool");
+        assert_eq!(tool["tool_call_id"], "call_1");
+        assert_eq!(tool["content"], "8.0");
+    }
+}
