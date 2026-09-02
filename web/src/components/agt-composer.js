@@ -147,10 +147,11 @@ export class AgtComposer extends HTMLElement {
       return;
     }
 
-    // Menu closed: a `/`-leading input is still control plane on Enter.
-    if (e.key === "Enter" && !e.shiftKey && textarea.value.trimStart().startsWith("/")) {
+    // Enter sends (slash-leading input is control plane); Shift+Enter keeps
+    // the textarea's default newline.
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      this.#runParsed(textarea.value);
+      this.#send();
     }
   }
 
@@ -233,11 +234,15 @@ export class AgtComposer extends HTMLElement {
       parsed.kind === "command" && parsed.name === name && !parsed.error
         ? parsed.args
         : "";
+    // A menu selection RESOLVES a typo'd prefix ("/m" → "/model"): dispatch
+    // the canonical command text so the runner re-parses the command that was
+    // actually selected, never the raw prefix that failed to parse.
+    const resolved = args ? `/${name} ${args}` : `/${name}`;
     textarea.value = "";
     this.#closeMenu();
     this.dispatchEvent(
       new CustomEvent("agt-command", {
-        detail: { name, args, rawText },
+        detail: { name, args, rawText: resolved },
         bubbles: true,
         composed: true,
       }),
