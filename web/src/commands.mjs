@@ -8,7 +8,8 @@
  *
  * Run signatures (implemented in web/src/components/agt-app.js):
  * - model:     `run() => Promise<string>` — GET /api/state →
- *              `model: <model> (provider: <provider>)` into the panel Slash.
+ *              `model: <model> (provider: <provider>)` (result goes to the
+ *              console bus; the panel keeps an invocation echo).
  * - built-ins: `run() => void` — opens the panel Built-ins tree.
  * - verbose:   `run() => string` — toggles the UI verbose flag and reports
  *              `verbose: on|off`; fires `agt-verbose-changed` on window.
