@@ -119,8 +119,8 @@ let provider = OpenAIProvider::new(api_key, "gpt-4o".to_string());
 ## Built-in Tools
 
 - **Calculator** - Basic arithmetic operations
-- **WebSearch** - Search the web via Google Custom Search API
-- **WebScraper** - Scrape content from URLs
+- **WebSearch** - Search the web via the Tavily API (requires `TAVILY_API_KEY`)
+- **WebFetch** - Fetch and extract the text content of a web page via the Tavily API (requires `TAVILY_API_KEY`)
 - **WriteFile** - Write content to files
 
 ## Running the Demo
@@ -153,7 +153,7 @@ Open `http://127.0.0.1:9090/` in your browser.
 
 The web demo requires:
 - `GROQ_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` environment variable (or in `.env` file)
-- Optional: `GOOGLE_API_KEY` and `GOOGLE_CX` for web search
+- Optional: `TAVILY_API_KEY` for the web tools (WebSearch and WebFetch)
 
 ## Creating Custom Tools
 
@@ -210,9 +210,8 @@ GROQ_API_KEY=your_groq_key
 ANTHROPIC_API_KEY=your_anthropic_key
 OPENAI_API_KEY=your_openai_key
 
-# For WebSearch tool
-GOOGLE_API_KEY=your_google_key
-GOOGLE_CX=your_search_engine_id
+# For the WebSearch and WebFetch tools (Tavily)
+TAVILY_API_KEY=your_tavily_key
 ```
 
 ## Features
@@ -233,21 +232,19 @@ GOOGLE_CX=your_search_engine_id
 
 ## Responsible Use
 
-**Important:** AxonerAI provides tools for web search and web scraping. Users are responsible for ensuring their use complies with applicable laws, terms of service, and ethical guidelines.
+**Important:** AxonerAI provides tools for web search and web fetching. Users are responsible for ensuring their use complies with applicable laws, terms of service, and ethical guidelines.
 
 ### Web Tools Guidelines
 
-**WebSearch Tool:**
-- Requires a Google Custom Search API key and Search Engine ID
-- Subject to [Google's Custom Search JSON API Terms of Service](https://developers.google.com/custom-search/v1/overview)
-- Respect rate limits (100 queries/day on free tier)
-- Commercial use may require paid quota
+**WebSearch and WebFetch Tools (Tavily):**
+- Require a `TAVILY_API_KEY` environment variable
+- Subject to Tavily's terms of service
+- Respect rate limits on your Tavily plan
 
-**WebScraper Tool:**
-- Always respect `robots.txt` directives
-- Check website Terms of Service before scraping
-- Implement appropriate rate limiting to avoid overloading servers
-- Some websites explicitly prohibit automated scraping
+**WebFetch Tool:**
+- Only fetches content the user or model explicitly requests via URL
+- Check website Terms of Service before fetching content
+- Some websites explicitly prohibit automated fetching
 - Consider legal implications in your jurisdiction
 
 ### API Provider Terms

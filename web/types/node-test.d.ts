@@ -6,11 +6,16 @@
  */
 
 declare module "node:test" {
+  /** Minimal test context supporting teardown hooks. */
+  export interface TestContext {
+    /** Register a callback to run after the test finishes. */
+    after(fn: () => void | Promise<void>): void;
+  }
   /**
    * @param {string} name
-   * @param {() => void | Promise<void>} fn
+   * @param {(t: TestContext) => void | Promise<void>} fn
    */
-  function test(name: string, fn: () => void | Promise<void>): void;
+  function test(name: string, fn: (t: TestContext) => void | Promise<void>): void;
   export default test;
 }
 

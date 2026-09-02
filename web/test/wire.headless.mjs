@@ -17,6 +17,27 @@ function throws(fn) {
   return undefined;
 }
 
+/**
+ * Stub console.error to capture calls; returns a restore function plus the
+ * captured calls array.
+ *
+ * @returns {{ calls: unknown[][], restore: () => void }}
+ */
+function stubConsoleError() {
+  /** @type {unknown[][]} */
+  const calls = [];
+  const original = console.error;
+  console.error = (...args) => {
+    calls.push(args);
+  };
+  return {
+    calls,
+    restore: () => {
+      console.error = original;
+    },
+  };
+}
+
 /** @type {{ name: string, ok: boolean, error?: string }[]} */
 const details = [];
 let pass = 0;
@@ -46,6 +67,19 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/**
+ * Narrow a possibly-null/undefined value or throw.
+ *
+ * @template T
+ * @param {T | null | undefined} value
+ * @param {string} message
+ * @returns {T}
+ */
+function need(value, message) {
+  if (value === null || value === undefined) throw new Error(message);
+  return value;
+}
+
 /** @param {unknown} actual @param {unknown} expected @param {string} message */
 function assertEqual(actual, expected, message) {
   assert(
@@ -55,12 +89,15 @@ function assertEqual(actual, expected, message) {
 }
 
 test("valid ready event parses, correct _type, deeply frozen", () => {
-  const event = parseWireEventText(
-    JSON.stringify({
-      _type: "ready",
-      version: "1.0.0",
-      websocket_path: "/ws",
-    }),
+  const event = need(
+    parseWireEventText(
+      JSON.stringify({
+        _type: "ready",
+        version: "1.0.0",
+        websocket_path: "/ws",
+      }),
+    ),
+    "ready event should not be dropped",
   );
   assertEqual(event._type, "ready", "ready _type mismatch");
   assert(Object.isFrozen(event), "ready event is not frozen");
@@ -76,30 +113,42 @@ test("valid ready event parses, correct _type, deeply frozen", () => {
 });
 
 test("valid pong event parses, correct _type, frozen", () => {
-  const event = parseWireEventText(JSON.stringify({ _type: "pong", id: "abc" }));
+  const event = need(
+    parseWireEventText(JSON.stringify({ _type: "pong", id: "abc" })),
+    "pong event should not be dropped",
+  );
   assertEqual(event._type, "pong", "pong _type mismatch");
   assert(Object.isFrozen(event), "pong event is not frozen");
 });
 
 test("valid assistant event parses, correct _type, frozen", () => {
-  const event = parseWireEventText(
-    JSON.stringify({ _type: "assistant", id: null, text: "hello" }),
+  const event = need(
+    parseWireEventText(
+      JSON.stringify({ _type: "assistant", id: null, text: "hello" }),
+    ),
+    "assistant event should not be dropped",
   );
   assertEqual(event._type, "assistant", "assistant _type mismatch");
   assert(Object.isFrozen(event), "assistant event is not frozen");
 });
 
 test("valid error event parses, correct _type, frozen", () => {
-  const event = parseWireEventText(
-    JSON.stringify({ _type: "error", id: "e1", message: "boom" }),
+  const event = need(
+    parseWireEventText(
+      JSON.stringify({ _type: "error", id: "e1", message: "boom" }),
+    ),
+    "error event should not be dropped",
   );
   assertEqual(event._type, "error", "error _type mismatch");
   assert(Object.isFrozen(event), "error event is not frozen");
 });
 
 test("mutation attempt on frozen event fails", () => {
-  const event = parseWireEventText(
-    JSON.stringify({ _type: "ready", version: "1.0.0", websocket_path: "/ws" }),
+  const event = need(
+    parseWireEventText(
+      JSON.stringify({ _type: "ready", version: "1.0.0", websocket_path: "/ws" }),
+    ),
+    "event should not be dropped",
   );
   assert(Object.isFrozen(event), "event should be frozen before mutation");
   const error = throws(() => {
@@ -118,45 +167,90 @@ test("mutation attempt on frozen event fails", () => {
   );
 });
 
-test("unknown _type throws TypeError", () => {
-  const error = throws(() =>
-    parseWireEventText(JSON.stringify({ _type: "nope" })),
-  );
-  assert(error instanceof TypeError, `expected TypeError, got ${String(error)}`);
+test("missing _type returns null silently", () => {
+  const { calls, restore } = stubConsoleError();
+  try {
+    assertEqual(parseWireEventText(JSON.stringify({ version: "1" })), null, "missing _type should return null");
+    assertEqual(parseWireEvent(null), null, "null data should return null");
+    assertEqual(parseWireEvent(42), null, "non-object data should return null");
+    assertEqual(calls.length, 0, "no console.error expected for missing _type");
+  } finally {
+    restore();
+  }
 });
 
-test("assistant with numeric text throws", () => {
-  const error = throws(() =>
-    parseWireEventText(
-      JSON.stringify({ _type: "assistant", id: null, text: 42 }),
-    ),
-  );
-  assert(
-    error instanceof Error && !(error instanceof TypeError),
-    `expected validation Error, got ${String(error)}`,
-  );
+test("unknown _type logs malformed/unsupported and returns null", () => {
+  const { calls, restore } = stubConsoleError();
+  try {
+    assertEqual(parseWireEventText(JSON.stringify({ _type: "nope" })), null, "unknown _type should return null");
+    assertEqual(calls.length, 1, "expected one console.error call");
+    assertEqual(calls[0][0], "[wire] malformed/unsupported frame (unknown _type)", "unexpected console.error prefix");
+    assertEqual(calls[0][1], "nope", "expected _type value logged");
+  } finally {
+    restore();
+  }
 });
 
-test("extra unexpected property throws", () => {
-  const error = throws(() =>
-    parseWireEventText(
-      JSON.stringify({
-        _type: "ready",
-        version: "1.0.0",
-        websocket_path: "/ws",
-        surprise: true,
-      }),
-    ),
-  );
-  assert(error instanceof Error, `expected Error, got ${String(error)}`);
+test("assistant with numeric text logs malformed frame and returns null", () => {
+  const { calls, restore } = stubConsoleError();
+  try {
+    assertEqual(
+      parseWireEventText(JSON.stringify({ _type: "assistant", id: null, text: 42 })),
+      null,
+      "invalid assistant should return null",
+    );
+    assertEqual(calls.length, 1, "expected one console.error call");
+    assertEqual(calls[0][0], "[wire] malformed frame", "unexpected console.error prefix");
+    assertEqual(calls[0][1], "assistant", "expected _type logged");
+    const errors = /** @type {{instancePath: string, schemaPath: string}[]} */ (calls[0][2]);
+    assert(errors.length > 0, "expected validator errors logged");
+    assert(
+      errors.some((e) => e.instancePath === "/text"),
+      "expected an error with instancePath /text",
+    );
+    assert(
+      errors.every((e) => typeof e.instancePath === "string" && typeof e.schemaPath === "string"),
+      "expected errors shaped {instancePath, schemaPath}",
+    );
+  } finally {
+    restore();
+  }
 });
 
-test("parseWireEventText on invalid JSON throws", () => {
-  const error = throws(() => parseWireEventText("not json"));
-  assert(
-    error instanceof SyntaxError,
-    `expected SyntaxError, got ${String(error)}`,
-  );
+test("extra unexpected property logs malformed frame and returns null", () => {
+  const { calls, restore } = stubConsoleError();
+  try {
+    assertEqual(
+      parseWireEventText(
+        JSON.stringify({
+          _type: "ready",
+          version: "1.0.0",
+          websocket_path: "/ws",
+          surprise: true,
+        }),
+      ),
+      null,
+      "extra property should return null",
+    );
+    assertEqual(calls.length, 1, "expected one console.error call");
+    assertEqual(calls[0][0], "[wire] malformed frame", "unexpected console.error prefix");
+    const errors = /** @type {{instancePath: string}[]} */ (calls[0][2]);
+    assert(errors.some((e) => e.instancePath === "/surprise"), "expected instancePath /surprise");
+  } finally {
+    restore();
+  }
+});
+
+test("parseWireEventText on invalid JSON logs and returns null", () => {
+  const { calls, restore } = stubConsoleError();
+  try {
+    assertEqual(parseWireEventText("not json"), null, "invalid JSON should return null");
+    assertEqual(calls.length, 1, "expected one console.error call");
+    assertEqual(calls[0][0], "[wire] malformed JSON frame", "unexpected console.error prefix");
+    assert(calls[0][1] instanceof SyntaxError, "expected the SyntaxError logged");
+  } finally {
+    restore();
+  }
 });
 
 test("raw validateReady: valid ready yields [] errors", () => {

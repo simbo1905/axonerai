@@ -108,18 +108,15 @@ let onEvent = null;
 let nextReply = null;
 
 /**
- * Mimic client.mjs's post-edit onmessage: validate + freeze, dispatch,
- * warn and skip invalid frames.
+ * Mimic client.mjs's onmessage: validate + freeze, dispatch; dropped (null)
+ * frames are already logged by wire.mjs.
  *
  * @param {unknown} frame
  */
 function emit(frame) {
-  try {
-    const event = parseWireEventText(JSON.stringify(frame));
-    if (onEvent) onEvent(event);
-  } catch (error) {
-    console.warn("ui-stub: skipping invalid/unhandled frame", error, frame);
-  }
+  const event = parseWireEventText(JSON.stringify(frame));
+  if (event === null) return;
+  if (onEvent) onEvent(event);
 }
 
 /** @type {any} */

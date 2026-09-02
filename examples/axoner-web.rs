@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use axonerai::tools::{Calculator, WebScrape, WebSearch, WriteFile};
+use axonerai::tools::{Calculator, WebFetch, WebSearch, WriteFile};
 use axonerai::wire::{ClientMsg, ServerMsg};
 use axonerai::{
     Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
@@ -385,14 +385,12 @@ fn build_agent_from_config(
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(Calculator));
-    registry.register(Box::new(WebScrape));
     registry.register(Box::new(WriteFile));
 
-    // Only register WebSearch if it can run without immediately failing on missing env vars.
-    let has_search_env =
-        std::env::var("SEARCH_API_KEY").is_ok() && std::env::var("CX_ENGINE").is_ok();
-    if has_search_env {
-        registry.register(Box::new(WebSearch));
+    // Only register the Tavily-backed web tools when an API key is available.
+    if std::env::var("TAVILY_API_KEY").is_ok() {
+        registry.register(Box::new(WebSearch::new()));
+        registry.register(Box::new(WebFetch::new()));
     }
 
     let system_prompt = Some(

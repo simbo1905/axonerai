@@ -93,10 +93,13 @@ export class AgtApp extends HTMLElement {
 
   /**
    * Handle a validated, deep-frozen wire event delivered by the client.
+   * Invalid frames are already dropped (and logged) by wire.mjs; this null
+   * guard is purely defensive.
    *
-   * @param {WireEvent} event
+   * @param {WireEvent | null} event
    */
   #handleEvent(event) {
+    if (event === null) return;
     this.#pushEvent(event);
     if (
       (event._type === "assistant" || event._type === "error") &&
@@ -132,14 +135,15 @@ export class AgtApp extends HTMLElement {
       // If no error event arrived via onEvent for this id (e.g. the socket
       // died), synthesize one so the failure is still visible in the log.
       if (this.#pending.has(id)) {
-        /** @type {WireEvent} */
         const synthesized = parseWireEvent({
           _type: "error",
           id,
           message: error instanceof Error ? error.message : String(error),
         });
         this.#pending.delete(id);
-        this.#pushEvent(synthesized);
+        if (synthesized !== null) {
+          this.#pushEvent(synthesized);
+        }
       }
     } finally {
       this.#pending.delete(id);

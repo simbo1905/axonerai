@@ -22,5 +22,5 @@ pub use openai::OpenAIProvider;
 pub use opencode::OpenCodeProvider;
 pub use session::Session;
 pub use tool::{Tool, ToolRegistry};
-pub use tools::{Calculator, WebScrape, WebSearch};
+pub use tools::{Calculator, WebFetch, WebSearch};
 pub use wire::{ClientMsg, ServerMsg};

@@ -98,42 +98,56 @@ const validators = {
 };
 
 /**
- * Validate, deep-freeze and return a wire event.
+ * Validate, deep-freeze and return a wire event, or return `null` for a
+ * frame that should be dropped:
+ * - no `_type` (or not a non-null object) → silent drop (no console noise);
+ * - unknown `_type` → logged as malformed/unsupported, then dropped;
+ * - validator failure → logged as malformed (with `{instancePath, schemaPath}`
+ *   errors), then dropped.
  *
  * @param {unknown} data an already-parsed JSON value
- * @returns {WireEvent}
- * @throws {TypeError} if `_type` is missing or not a known event type
- * @throws {Error} if the payload does not validate against the event's schema
+ * @returns {WireEvent | null}
  */
 export function parseWireEvent(data) {
   const type =
     data !== null && typeof data === "object" && !Array.isArray(data)
       ? /** @type {any} */ (data)._type
       : undefined;
-  if (typeof type !== "string" || !(type in validators)) {
-    throw new TypeError(
-      `unknown wire event _type: ${JSON.stringify(type ?? null)}`,
+  if (typeof type !== "string") {
+    // No `_type`: not a wire frame — drop silently.
+    return null;
+  }
+  if (!(type in validators)) {
+    console.error(
+      "[wire] malformed/unsupported frame (unknown _type)",
+      type,
+      data,
     );
+    return null;
   }
   const errors = validators[/** @type {keyof typeof validators} */ (type)](data);
   if (errors.length > 0) {
-    const detail = errors
-      .map((e) => `${e.instancePath || "/"} (${e.schemaPath})`)
-      .join(", ");
-    throw new Error(`invalid ${type} event: ${detail}`);
+    console.error("[wire] malformed frame", type, errors);
+    return null;
   }
   return /** @type {WireEvent} */ (deepFreeze(data));
 }
 
 /**
- * Parse a JSON text as a wire event.
+ * Parse a JSON text as a wire event, or return `null` if the text is not
+ * valid JSON or the frame must be dropped (see {@link parseWireEvent}).
  *
  * @param {string} text
- * @returns {WireEvent}
- * @throws {SyntaxError} if `text` is not valid JSON
- * @throws {TypeError} if `_type` is missing or not a known event type
- * @throws {Error} if the payload does not validate against the event's schema
+ * @returns {WireEvent | null}
  */
 export function parseWireEventText(text) {
-  return parseWireEvent(JSON.parse(text));
+  /** @type {unknown} */
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    console.error("[wire] malformed JSON frame", error);
+    return null;
+  }
+  return parseWireEvent(data);
 }

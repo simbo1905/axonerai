@@ -46,11 +46,9 @@ async function connect({ onOpen, onClose, onError, onEvent } = {}) {
 
   socket.onmessage = (ev) => {
     // Validate + deep-freeze every incoming frame before any handling.
-    let msg;
-    try {
-      msg = parseWireEventText(ev.data);
-    } catch (e) {
-      console.warn("agt: skipping invalid/unhandled frame", e, ev.data);
+    // Dropped (null) frames are already logged by wire.mjs.
+    const msg = parseWireEventText(ev.data);
+    if (msg === null) {
       return;
     }
     // Hand the frozen event to the UI first, then do client-internal handling.
