@@ -20,6 +20,12 @@ Working rules for agents operating in this repository.
   `make build-server` builds the release binary; `make check` type-checks the
   Teal tooling. Omitted PORT derives deterministically: 9300 + hash of
   `provider--model` % 500.
+- `make prompts` composes `prompts/generated/*.txt` from `prompts/base.txt` plus
+  `prompts/models/*.patch`; it must run before `cargo build` because
+  `prompts/generated/default.txt` is include_str!-embedded at compile time.
+- `make evals` runs the promptfoo eval matrix (7 provider--model servers on
+  pinned ports 9501–9507). The Groq free tier is rate-limited, so expect
+  throttling on those configs.
 
 ## Web UI conventions
 
@@ -29,6 +35,10 @@ Working rules for agents operating in this repository.
   schema per event in `schemas/*.jdt.json`. Generated validators live in
   `web/generated/` (see the `validators` Makefile target). Data coming off the wire
   in the browser must be deep-frozen and JTD-validated before use.
+- Client layering: `web/src/wire.mjs` (validate + freeze + drop/malformed
+  contract), `web/src/dispatch.mjs` (business-logic `_type` switch on validated
+  frozen events), `web/src/store.mjs` (immutable append-only log; the seam for a
+  future worker/BroadcastChannel/IndexedDB transport).
 
 ## Task delegation process
 
@@ -48,6 +58,9 @@ Major tasks are delegated to subagents to keep the orchestrator's context lean:
    - if the code is green with respect to the current tests (the current TDD bar),
      `git commit`. Use the message prefix `"wip: <summary>"` while the full feature
      set is not yet complete; use a normal message once it is.
+
+The `opencode-subagent-delegation` skill encodes this process; agents SHOULD
+prefer it where it does not overwrite AGENTS.md or user preferences.
 
 ## Todo list ordering
 

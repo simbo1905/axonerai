@@ -23,7 +23,7 @@ uuid = { version = "1", features = ["v4"] }
 
 ```rust
 use axonerai::agent::Agent;
-use axonerai::groq::GroqProvider;
+use axonerai::mistral::MistralProvider;
 use axonerai::tool::ToolRegistry;
 use axonerai::tools::{Calculator, WebSearch};
 use axonerai::file_session_manager::FileSessionManager;
@@ -33,8 +33,8 @@ use std::time::Instant;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // 1. Create a provider
-    let provider = GroqProvider::new(
-        std::env::var("GROQ_API_KEY")?
+    let provider = MistralProvider::new(
+        std::env::var("MISTRAL_API_KEY")?
     );
 
     // 2. Register tools
@@ -90,38 +90,38 @@ async fn main() -> anyhow::Result<()> {
 
 ## Supported Providers
 
-The Framework is currently hardcoded to use :
- - groq : `openai/gpt-oss-20b`
-- openai: `gpt-5-mini`
+Providers and models are configured in `.axonerai/axonerai.jsonc` (the config file
+wins; built-in defaults are used otherwise).
 
-Feel free to modify this in the respective files in the src crate
-
-| Provider | Model Examples                                                                                                |
-|----------|---------------------------------------------------------------------------------------------------------------|
-| **Groq** | `openai/gpt-oss-20b`(currently hardcoded, but can be changed to `llama-3.3-70b-versatile` or something else,) |
-| **Anthropic** | `claude-sonnet-4-20250514`, `claude-3-haiku-20240307`                                                         |
-| **OpenAI** | `gpt-5-mini` (currently hardcoded), `gpt-4o-mini`                                                             |
+| Provider | Models |
+|----------|--------|
+| **Mistral** (default) | `zai-glm-5-2`, `mistral-medium-latest` |
+| **Groq** | `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`, `openai/gpt-oss-120b` |
+| **OpenCode Zen** | `glm-5.2` |
+| **OpenCode Go** | `glm-5.2` |
 
 ```rust
+// Mistral (default)
+use axonerai::mistral::MistralProvider;
+let provider = MistralProvider::new(api_key);
+
 // Groq (free tier available!)
 use axonerai::groq::GroqProvider;
-let provider = GroqProvider::new(api_key, "llama-3.3-70b-versatile".to_string());
+let provider = GroqProvider::new(api_key);
 
-// Anthropic
-use axonerai::anthropic::AnthropicProvider;
-let provider = AnthropicProvider::new(api_key, "claude-sonnet-4-20250514".to_string());
-
-// OpenAI
-use axonerai::openai::OpenAIProvider;
-let provider = OpenAIProvider::new(api_key, "gpt-4o".to_string());
+// OpenCode Zen / OpenCode Go
+use axonerai::opencode::OpenCodeProvider;
+let provider = OpenCodeProvider::new(api_key, endpoint, model);
 ```
 
 ## Built-in Tools
 
 - **Calculator** - Basic arithmetic operations
-- **WebSearch** - Search the web via the Tavily API (requires `TAVILY_API_KEY`)
-- **WebFetch** - Fetch and extract the text content of a web page via the Tavily API (requires `TAVILY_API_KEY`)
+- **WebSearch** - Search the web via the Tavily API
+- **WebFetch** - Fetch and extract the text content of a web page via the Tavily API
 - **WriteFile** - Write content to files
+
+The web tools (WebSearch and WebFetch) are registered when `TAVILY_API_KEY` is set.
 
 ## Running the Demo
 
@@ -147,13 +147,44 @@ cargo run --example axoner-web --features web --release -- serve --port 9090
 
 # With verbose logging (debug level)
 cargo run --example axoner-web --features web --release -- -v serve --port 9090
+
+# Pick a specific provider and model
+cargo run --example axoner-web --features web --release -- serve --port 9090 --provider mistral --model zai-glm-5-2
 ```
 
 Open `http://127.0.0.1:9090/` in your browser.
 
+The system prompt is composed from `prompts/` at build time (see
+[System Prompts](#system-prompts) below) and is provider+model-specific when a
+matching prompt exists, otherwise the default prompt is used.
+
 The web demo requires:
-- `GROQ_API_KEY`, `OPENAI_API_KEY`, or `ANTHROPIC_API_KEY` environment variable (or in `.env` file)
+- `MISTRAL_API_KEY`, `GROQ_API_KEY`, or `OPENCODE_API_KEY` environment variable (or in `.env` file)
 - Optional: `TAVILY_API_KEY` for the web tools (WebSearch and WebFetch)
+
+## System Prompts
+
+- `prompts/base.txt` is the one true base prompt.
+- `prompts/models/<provider>--<model>.patch` files adjust it per provider/model
+  using `# PREPEND` / `# APPEND` / `# REPLACE` sections.
+- `make prompts` composes the patches into `prompts/generated/` (the generated
+  files are committed).
+- The server uses the provider+model-specific prompt if present, else the
+  default. Prompt composition happens at build time only.
+
+## Evals
+
+`make evals` runs [promptfoo](https://promptfoo.dev) over the 7-config matrix
+(groq×3, mistral×2, opencode zen/go) against the local servers. Tests use
+deterministic asserts. You need the API keys in `.env`. Results are written to
+`.tmp/evals/`.
+
+## Local server tooling
+
+`make serve-up` / `make serve-down` / `make serve-status` / `make serve-logs`
+manage local `axoner-web` server processes (one per provider/model/port, with
+pidfiles and logs in `.tmp/run/`); `make build-server` builds the release
+binary.
 
 ## Creating Custom Tools
 
@@ -206,9 +237,9 @@ registry.register(Box::new(MyTool));
 
 ```bash
 # Required for your chosen provider
+MISTRAL_API_KEY=your_mistral_key
 GROQ_API_KEY=your_groq_key
-ANTHROPIC_API_KEY=your_anthropic_key
-OPENAI_API_KEY=your_openai_key
+OPENCODE_API_KEY=your_opencode_key
 
 # For the WebSearch and WebFetch tools (Tavily)
 TAVILY_API_KEY=your_tavily_key
@@ -216,7 +247,7 @@ TAVILY_API_KEY=your_tavily_key
 
 ## Features
 
-- [x] Multi-provider support (Groq, Anthropic, OpenAI)
+- [x] Multi-provider support (Mistral, Groq, OpenCode Zen/Go)
 - [x] Tool system with custom tool support
 - [x] Session management (file-based)
 - [x] System prompts
@@ -250,7 +281,6 @@ TAVILY_API_KEY=your_tavily_key
 ### API Provider Terms
 
 When using AxonerAI with LLM providers, you must comply with their respective terms:
-- [Anthropic Terms of Service](https://www.anthropic.com/legal/terms)
 - [OpenAI Terms of Use](https://openai.com/policies/terms-of-use)
 - [Groq Terms of Service](https://groq.com/terms-of-service/)
 
