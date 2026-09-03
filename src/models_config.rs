@@ -489,6 +489,52 @@ pub fn fetch_diff(
     diff
 }
 
+/// Providers the bin knows even when no axonerai.jsonc roster exists on
+/// disk (sorted). opencode-zen and opencode-go are ONE provider (one
+/// OPENCODE_API_KEY) with two endpoints — they still get one config each.
+pub const KNOWN_PROVIDERS: &[&str] = &["groq", "mistral", "opencode-go", "opencode-zen"];
+
+/// Provider short names from an axonerai.jsonc roster (JSONC with comments
+/// and trailing commas): the keys of the `providers` object, sorted and
+/// deduped.
+pub fn roster_providers_from_jsonc(jsonc_text: &str) -> Result<Vec<String>> {
+    let json = crate::config::strip_jsonc_comments(jsonc_text);
+    let value: Value =
+        serde_json::from_str(&json).context("axonerai.jsonc roster is not valid JSON(C)")?;
+    let Some(providers) = value.get("providers").and_then(|p| p.as_object()) else {
+        bail!("axonerai.jsonc roster has no `providers` object");
+    };
+    let mut names: Vec<String> = providers.keys().cloned().collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// `list-providers` source: the axonerai.jsonc roster's provider short names
+/// when the file exists, else `KNOWN_PROVIDERS`. Missing roster is
+/// missing-safe — never a crash.
+pub fn list_providers(roster_path: &Path) -> Vec<String> {
+    let known: Vec<String> = KNOWN_PROVIDERS.iter().map(|s| s.to_string()).collect();
+    let Ok(raw) = std::fs::read_to_string(roster_path) else {
+        return known;
+    };
+    match roster_providers_from_jsonc(&raw) {
+        Ok(names) => names,
+        Err(_) => known,
+    }
+}
+
+/// `list-models` payload: the loaded config for one provider plus the
+/// winning source (local masks user, same resolution as `dump`).
+/// Missing-safe: `Ok(None)` when no file exists anywhere.
+pub fn list_models(
+    local: &Path,
+    user: &Path,
+    provider: &str,
+) -> Result<Option<(ModelSource, ProviderModelsFile)>> {
+    Ok(load_from_dirs(local, user, provider)?.map(|loaded| (loaded.source, loaded.config)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,10 @@
 //!   `<name>.<unix-epoch>` before any mutation
 //! - `dump [provider]`                 — pretty-print loaded config(s) with
 //!   the winning source noted
+//! - `list-providers`                  — print the provider short names one
+//!   per line (axonerai.jsonc roster, else the built-in known list)
+//! - `list-models <provider>`          — print the provider's loaded config
+//!   JSON with the winning source labelled (same masking as dump)
 //! - `set-cost <provider> <id> <in> <out>` — set cost strings (backup first)
 //! - `set-context <provider> <id> <tokens>` — set the context window
 //! - `fetch <provider>`                — pull the provider's models endpoint
@@ -22,7 +26,7 @@ use clap::{Parser, Subcommand};
 
 use axonerai::models_config::{
     self, LoadedModels, ModelSource, fetch_diff, fetch_endpoint, fetch_models_from_url,
-    iso_date_from_epoch_secs, load, local_dir, user_dir,
+    iso_date_from_epoch_secs, list_models, list_providers, load, local_dir, user_dir,
 };
 
 #[derive(Parser, Debug)]
@@ -45,6 +49,10 @@ enum Commands {
         /// Provider short name (e.g. mistral). Omit for every config on disk.
         provider: Option<String>,
     },
+    /// Print the provider short names one per line (roster, else known list)
+    ListProviders,
+    /// Print one provider's loaded config JSON with its winning source
+    ListModels { provider: String },
     /// Set the input/output per-MTok cost strings for one model
     SetCost {
         provider: String,
@@ -69,6 +77,8 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Backup => cmd_backup(),
         Commands::Dump { provider } => cmd_dump(provider.as_deref()),
+        Commands::ListProviders => cmd_list_providers(),
+        Commands::ListModels { provider } => cmd_list_models(&provider),
         Commands::SetCost {
             provider,
             model_id,
@@ -204,6 +214,51 @@ fn cmd_dump(provider: Option<&str>) -> Result<()> {
                         .display(),
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+/// `list-providers`: the axonerai.jsonc roster's short names when the file
+/// exists, else the built-in known list — one per line, with the zen/go
+/// one-key-two-endpoints note on stderr.
+fn cmd_list_providers() -> Result<()> {
+    for name in list_providers(&std::path::PathBuf::from(".axonerai/axonerai.jsonc")) {
+        println!("{name}");
+    }
+    eprintln!(
+        "note: opencode-zen and opencode-go are ONE provider (one OPENCODE_API_KEY) with two endpoints — they still get one config each"
+    );
+    Ok(())
+}
+
+/// `list-models <provider>`: the provider's loaded config JSON with the
+/// winning source labelled (same local-masks-user resolution as dump).
+/// Missing-safe: a note, never a crash, when no config file exists.
+fn cmd_list_models(provider: &str) -> Result<()> {
+    match list_models(&local_dir(), &user_dir(), provider)? {
+        Some((source, config)) => {
+            let label = match source {
+                ModelSource::Local => "local (masks user)",
+                ModelSource::User => "user (no local file)",
+            };
+            println!(
+                "# {} — source {label} — updated {}",
+                config.provider, config.updated
+            );
+            println!("{}", serde_json::to_string_pretty(&config)?);
+        }
+        None => {
+            println!(
+                "{}: no config file (checked {} then {})",
+                provider,
+                local_dir()
+                    .join(models_config::file_name(provider))
+                    .display(),
+                user_dir()
+                    .join(models_config::file_name(provider))
+                    .display(),
+            );
         }
     }
     Ok(())

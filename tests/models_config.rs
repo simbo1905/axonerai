@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use axonerai::models_config::{
-    self, FetchedModel, ModelSource, ProviderModel, ProviderModelsFile, backup_all, backup_file,
-    fetch_diff, fetch_models_from_url, iso_date_from_epoch_secs, load_from_dirs, parse_file,
+    self, FetchedModel, KNOWN_PROVIDERS, ModelSource, ProviderModel, ProviderModelsFile,
+    backup_all, backup_file, fetch_diff, fetch_models_from_url, iso_date_from_epoch_secs,
+    list_models, list_providers, load_from_dirs, parse_file, roster_providers_from_jsonc,
     set_context, set_cost, write_config,
 };
 
@@ -375,6 +376,103 @@ fn set_with_no_config_file_errors() {
         err.contains("no models config file"),
         "missing config is an error, not a fresh write: {err}"
     );
+}
+
+// --- list-providers / list-models (item42) -----------------------------------
+
+/// The repo-style axonerai.jsonc roster: JSONC comments, four providers.
+/// (The main config parser strips comments only — no trailing commas.)
+fn roster_jsonc() -> String {
+    r#"{
+        // axonerai roster
+        "default_provider": "mistral",
+        "providers": {
+            "mistral": { "name": "Mistral" },
+            "opencode-zen": { "name": "OpenCode Zen" },
+            "opencode-go": { "name": "OpenCode Go" },
+            "groq": { "name": "Groq" }
+        }
+    }"#
+    .to_string()
+}
+
+#[test]
+fn roster_providers_lists_short_names_sorted() {
+    let names = roster_providers_from_jsonc(&roster_jsonc()).unwrap();
+    assert_eq!(
+        names,
+        vec![
+            "groq".to_string(),
+            "mistral".to_string(),
+            "opencode-go".to_string(),
+            "opencode-zen".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn roster_without_providers_object_errors() {
+    let err = roster_providers_from_jsonc(r#"{"default_provider": "mistral"}"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("providers"), "{err}");
+}
+
+#[test]
+fn list_providers_reads_roster_when_present_and_falls_back_when_missing() {
+    let dir = temp_dir("roster");
+    std::fs::create_dir_all(&dir).unwrap();
+    let roster_path = dir.join("axonerai.jsonc");
+    std::fs::write(&roster_path, roster_jsonc()).unwrap();
+
+    assert_eq!(
+        list_providers(&roster_path),
+        vec![
+            "groq".to_string(),
+            "mistral".to_string(),
+            "opencode-go".to_string(),
+            "opencode-zen".to_string(),
+        ]
+    );
+
+    let missing = dir.join("does-not-exist.jsonc");
+    assert_eq!(
+        list_providers(&missing),
+        KNOWN_PROVIDERS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+        "missing roster falls back to the known list, never a crash"
+    );
+}
+
+#[test]
+fn list_models_labels_the_winning_source_local_masks_user() {
+    let local = temp_dir("list-local");
+    let user = temp_dir("list-user");
+    write_config_file(&local, "mistral", &valid_jsonc("mistral", 32768));
+    write_config_file(&user, "mistral", &valid_jsonc("mistral", 131072));
+
+    let (source, config) = list_models(&local, &user, "mistral")
+        .unwrap()
+        .expect("a config exists");
+
+    assert_eq!(source, ModelSource::Local, "local masks user");
+    assert_eq!(config.provider, "mistral");
+    assert_eq!(config.models[0].id, "zai-glm-5-2");
+    assert_eq!(
+        config.models[0].costs.as_ref().unwrap().input_per_mtok,
+        Some("$0.50".to_string()),
+        "the listed config is the winning local one"
+    );
+}
+
+#[test]
+fn list_models_is_missing_safe() {
+    let local = temp_dir("list-none");
+    let user = temp_dir("list-none-user");
+    let listed = list_models(&local, &user, "mistral").unwrap();
+    assert!(listed.is_none(), "no file → None, never a crash");
 }
 
 // --- fetch against a stub HTTP server ----------------------------------------
