@@ -5,16 +5,29 @@ use anyhow::{Result, anyhow};
 /// Executes tool calls and returns results
 pub struct ToolExecutor<'a> {
     registry: &'a ToolRegistry,
+    /// When set, the per-call stdout chatter is suppressed (the agent's
+    /// quiet mode; see [`crate::agent::Agent::set_quiet`]).
+    quiet: bool,
 }
 
 impl<'a> ToolExecutor<'a> {
     pub fn new(registry: &'a ToolRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            quiet: false,
+        }
+    }
+
+    /// Suppress the per-call stdout chatter (see [`ToolExecutor::quiet`]).
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
     }
 
     /// Execute a single tool call
     pub async fn execute(&self, tool_call: &ToolCall) -> Result<ToolResult> {
-        println!("  🔧 Executing tool: {}", tool_call.name);
+        if !self.quiet {
+            println!("  🔧 Executing tool: {}", tool_call.name);
+        }
 
         let tool = self
             .registry

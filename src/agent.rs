@@ -35,6 +35,11 @@ pub struct Agent {
     max_iterations: usize,
     system_prompt: Option<String>,
     file_session_manager: Option<FileSessionManager>,
+    /// When set, the loop's `println!` chatter ("💭 Agent thinking:",
+    /// "Response from Agent:", blank lines) is suppressed so programmatic
+    /// callers (e.g. the `--oneshot` CLI mode) keep stdout for the final
+    /// text alone. Default `false` — interactive runs chatter as before.
+    quiet: bool,
 }
 
 impl Agent {
@@ -50,7 +55,13 @@ impl Agent {
             max_iterations: 10, // Prevent infinite loops
             system_prompt,
             file_session_manager,
+            quiet: false,
         }
+    }
+
+    /// Suppress the loop's stdout chatter (see [`Agent::quiet`]).
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
     }
 
     /// Run the agent with a user prompt (no tool-trace reporting).
@@ -76,7 +87,9 @@ impl Agent {
             Session::new("stateless".to_string())
         };
 
-        println!();
+        if !self.quiet {
+            println!();
+        }
 
         session.add_message(Message {
             role: "user".to_string(),
@@ -85,7 +98,8 @@ impl Agent {
             tool_call_id: None,
         });
 
-        let executor = ToolExecutor::new(&self.registry);
+        let mut executor = ToolExecutor::new(&self.registry);
+        executor.set_quiet(self.quiet);
         let tools = self.registry.get_all_for_llm();
 
         for _iteration in 1..=self.max_iterations {
@@ -113,7 +127,9 @@ impl Agent {
                             sm.save(&session)?;
                         }
 
-                        println!("Response from Agent:");
+                        if !self.quiet {
+                            println!("Response from Agent:");
+                        }
                         return Ok(text);
                     } else {
                         return Ok("(No response from agent)".to_string());
@@ -122,7 +138,9 @@ impl Agent {
 
                 StopReason::ToolUse => {
                     if let Some(text) = &response.text {
-                        println!("💭 Agent thinking: {}", text);
+                        if !self.quiet {
+                            println!("💭 Agent thinking: {}", text);
+                        }
                     }
 
                     if response.tool_calls.is_empty() {
@@ -171,7 +189,9 @@ impl Agent {
                         });
                     }
 
-                    println!();
+                    if !self.quiet {
+                        println!();
+                    }
                     // Continue the loop
                 }
 

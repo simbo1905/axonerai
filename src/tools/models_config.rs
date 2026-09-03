@@ -263,12 +263,16 @@ mod tests {
             "config contents round-trip"
         );
         assert_eq!(
-            mistral["config"]["models"][0]["costs"]["input_per_mtok"], "$2.00"
+            mistral["config"]["models"][0]["costs"]["input_per_mtok"],
+            "$2.00"
         );
         assert_eq!(mistral["config"]["models"][0]["context_window"], 131072);
 
         let groq = by_provider("groq");
-        assert_eq!(groq["source"], "user", "user file used when no local: {groq}");
+        assert_eq!(
+            groq["source"], "user",
+            "user file used when no local: {groq}"
+        );
         assert_eq!(groq["config"]["models"][0]["id"], "test-model");
         assert_eq!(groq["config"]["models"][0]["context_window"], 8192);
     }

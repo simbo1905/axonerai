@@ -75,6 +75,24 @@ impl ToolRegistry {
         self.tools = Arc::new(map);
     }
 
+    /// Registry-level read-only filter: consume the registry and return one
+    /// that exposes ONLY tools whose `Tool::is_read_only()` is `true` (the
+    /// shared suppression state is carried over unchanged). The
+    /// `--tools-readonly` flag applies this wherever a registry is built —
+    /// there is no tool-name special-casing anywhere; a tool is dropped
+    /// exactly when it reports `is_read_only() == false`.
+    pub fn into_read_only(self) -> Self {
+        let tools: HashMap<String, Arc<dyn Tool>> = (*self.tools)
+            .clone()
+            .into_iter()
+            .filter(|(_name, tool)| tool.is_read_only())
+            .collect();
+        Self {
+            tools: Arc::new(tools),
+            suppressed: self.suppressed,
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.get(name)
     }
@@ -162,6 +180,7 @@ mod tests {
     struct DummyTool {
         name: &'static str,
         source: ToolSource,
+        read_only: bool,
     }
 
     #[async_trait]
@@ -182,13 +201,103 @@ mod tests {
             self.source
         }
 
+        fn is_read_only(&self) -> bool {
+            self.read_only
+        }
+
         async fn execute(&self, _input: Value) -> Result<String> {
             Ok("ok".to_string())
         }
     }
 
     fn dummy(name: &'static str, source: ToolSource) -> Box<dyn Tool> {
-        Box::new(DummyTool { name, source })
+        Box::new(DummyTool {
+            name,
+            source,
+            read_only: true,
+        })
+    }
+
+    fn write_dummy(name: &'static str) -> Box<dyn Tool> {
+        Box::new(DummyTool {
+            name,
+            source: ToolSource::Builtin,
+            read_only: false,
+        })
+    }
+
+    #[test]
+    fn into_read_only_keeps_only_is_read_only_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(dummy("Calc", ToolSource::Builtin));
+        registry.register(dummy("tavily_search", ToolSource::Mcp));
+        registry.register(write_dummy("write_file"));
+
+        assert_eq!(registry.list_tools().len(), 3);
+
+        let read_only = registry.into_read_only();
+        let names = read_only.list_tools();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"Calc".to_string()));
+        assert!(names.contains(&"tavily_search".to_string()));
+        assert!(!names.contains(&"write_file".to_string()));
+        assert!(read_only.get("write_file").is_none());
+        assert!(read_only.get("Calc").is_some());
+    }
+
+    /// The real registry shape (same build as examples/axoner.rs and
+    /// examples/axoner-web.rs): with the filter `write_file` is absent and
+    /// every read tool (calculator / ModelsConfig / WebSearch / WebFetch /
+    /// tavily facade) is present; without it all seven are present.
+    #[test]
+    fn into_read_only_filters_the_real_registry() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::Calculator));
+        registry.register(Box::new(crate::tools::WriteFile::default()));
+        registry.register(Box::new(crate::tools::ModelsConfig::new()));
+        registry.register(Box::new(crate::tools::WebSearch::new()));
+        registry.register(Box::new(crate::tools::WebFetch::new()));
+        registry.register(Box::new(crate::tools::TavilyMcpSearch::new()));
+        registry.register(Box::new(crate::tools::TavilyMcpExtract::new()));
+
+        let all_names: Vec<String> = registry.list_tools();
+        assert_eq!(all_names.len(), 7, "precondition: all registered");
+        assert!(all_names.contains(&"write_file".to_string()));
+
+        let read_only = registry.into_read_only();
+        let names: Vec<String> = read_only.list_tools();
+        assert_eq!(names.len(), 6, "only write_file dropped");
+        assert!(!names.contains(&"write_file".to_string()));
+        for expected in [
+            "calculator",
+            "ModelsConfig",
+            "WebSearch",
+            "WebFetch",
+            "tavily_search",
+            "tavily_extract",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "read tool `{expected}` must survive the filter"
+            );
+        }
+
+        // The LLM-facing tool list reflects the same filtered set.
+        let for_llm = read_only.get_all_for_llm();
+        assert_eq!(for_llm.len(), 6);
+        assert!(!for_llm.iter().any(|t| t.name == "write_file"));
+    }
+
+    #[test]
+    fn into_read_only_carries_suppression_state_over() {
+        let mut registry = ToolRegistry::new();
+        registry.register(dummy("Calc", ToolSource::Builtin));
+        registry.register(write_dummy("write_file"));
+        registry.set_suppressed("Calc", false);
+
+        let read_only = registry.into_read_only();
+        assert!(read_only.is_suppressed("Calc"));
+        assert!(read_only.get_all_for_llm().is_empty());
     }
 
     #[test]

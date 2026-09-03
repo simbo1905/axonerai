@@ -5,7 +5,15 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat wasm-validators
+.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat wasm-validators oneshot
+
+# Run the CLI agent ONCE and exit (item45): make oneshot PROMPT="<prompt or
+# path/to/skill.md>". A PROMPT ending in .md that exists on disk is read as a
+# skill: its content is sent prefixed with "Follow this skill exactly."
+# stdout carries the final answer only; tool traces go to stderr with
+# ARGS="--verbose". Compose read-only mode with ARGS="--tools-readonly".
+oneshot:
+	cargo run --quiet --example axoner -- --oneshot "$(PROMPT)" $(ARGS)
 
 # Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
 # Must run before `cargo build`: src/prompt.rs embeds
