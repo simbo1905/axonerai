@@ -1,0 +1,44 @@
+{
+  "properties": {
+    "provider": {
+      "type": "string"
+    },
+    "updated": {
+      "type": "string"
+    },
+    "models": {
+      "elements": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "display": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": "uint32"
+          }
+        },
+        "optionalProperties": {
+          "costs": {
+            "nullable": true,
+            "optionalProperties": {
+              "input_per_mtok": {
+                "type": "string"
+              },
+              "output_per_mtok": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "offer": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

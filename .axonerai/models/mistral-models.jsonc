@@ -1,0 +1,21 @@
+// Mistral models — shared per-provider config (item41).
+// LOCAL MASKS USER: this file wins over ~/.axonerai/models/mistral-models.jsonc.
+// Costs/offers are optional; add them deliberately (kept as strings to avoid
+// float semantics). The `offer` field exists in the JTD schema
+// (schemas/provider_models.jdt.json) but is not populated yet.
+{
+  "provider": "mistral",
+  "updated": "2026-09-03",
+  "models": [
+    {
+      "id": "zai-glm-5-2",
+      "display": "Z.ai GLM 5.2",
+      "context_window": 131072,
+    },
+    {
+      "id": "mistral-medium-latest",
+      "display": "Mistral Medium",
+      "context_window": 131072,
+    },
+  ],
+}

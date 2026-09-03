@@ -125,6 +125,32 @@ window.fetch = /** @type {typeof window.fetch} */ (
         headers: { "Content-Type": "application/json" },
       });
     }
+    if (url === "/api/models") {
+      // item41: the server's per-provider models config (local masks user).
+      return new Response(
+        JSON.stringify({
+          provider: "mistral",
+          source: "local",
+          models: [
+            {
+              id: "zai-glm-5-2",
+              display: "GLM-5.2",
+              context_window: 32768,
+              costs: null,
+              offer: null,
+            },
+            {
+              id: "mistral-medium-latest",
+              display: "Mistral Medium",
+              context_window: 131072,
+              costs: null,
+              offer: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
     if (url === "/api/model" && init && init.method === "POST") {
       const body = /** @type {{ model: string }} */ (
         JSON.parse(String(init.body))
@@ -139,8 +165,14 @@ window.fetch = /** @type {typeof window.fetch} */ (
           { status: 400, headers: { "Content-Type": "application/json" } },
         );
       }
-      // Emulate the server swap: the response IS the updated snapshot.
+      // Emulate the server swap: the response IS the updated snapshot, and
+      // the config context_window is per-model — the swapped model is not
+      // in the models config, so the window drops (the browser then falls
+      // back to its hardcoded map).
       fixture.model = body.model;
+      if (fixture.context && "context_window" in fixture.context) {
+        delete fixture.context.context_window;
+      }
       return new Response(JSON.stringify(fixture), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -349,7 +381,10 @@ await test("panel boots from /api/state: footer status bar, MCP tavily Connected
     "Chat · zai-glm-5-2 mistral · think off",
     "footer left",
   );
-  assertEqual(footerRightText(), "12.3K (9%)", "footer right context use");
+  // item41: the fixture's /api/state carries the config context_window
+  // (32768) for zai-glm-5-2 — the percent follows the config, not the
+  // hardcoded 131072 map.
+  assertEqual(footerRightText(), "12.3K (38%)", "footer right context use");
   await waitFor(() => titleText() === "axonerai", "session title");
   assert(
     sectionText("MCP").includes("tavily") &&
@@ -445,10 +480,12 @@ await test("Enter on /models opens the Models tree; other trees collapse", async
   assertEqual(ta().value, "", "input cleared after running the command");
   const rows = [...section("Models").querySelectorAll(".agt-p-model")];
   assertEqual(rows.length, 2, "mistral roster rows rendered");
+  // item41: rows come from /api/models (stubbed) — the config window (33K)
+  // wins over the hardcoded 131K.
   assert(
     rows[0].textContent?.includes("zai-glm-5-2") &&
-      rows[0].textContent?.includes("131K"),
-    `first row should be zai-glm-5-2 with its context window, got ${JSON.stringify(rows[0].textContent)}`,
+      rows[0].textContent?.includes("33K"),
+    `first row should be zai-glm-5-2 with its config context window, got ${JSON.stringify(rows[0].textContent)}`,
   );
   assert(
     rows[1].textContent?.includes("mistral-medium-latest") &&
@@ -628,3 +665,10 @@ await test("app snapshot is deep-frozen", () => {
 
 window.__PANEL_TEST_RESULTS__ = { pass, fail, details };
 document.title = "panel-tests-done";
+console.log(
+  `[panel-tests] pass=${pass} fail=${fail}` +
+    details
+      .filter((d) => !d.ok)
+      .map((d) => `\n[panel-tests] FAIL ${d.name}: ${d.error}`)
+      .join(""),
+);

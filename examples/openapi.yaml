@@ -33,6 +33,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/StateSnapshot"
 
+  /api/models:
+    get:
+      summary: Models config for the current provider
+      description: >
+        The per-provider models config (item41): model ids, display names,
+        context windows, optional cost strings and freeform offers, loaded
+        from `.axonerai/models/<provider>-models.jsonc` (local masks user,
+        missing-safe). Pass `?reload=1` to re-read the config from disk
+        first. With no config file for the provider, `source` is null and
+        `models` is empty.
+      parameters:
+        - name: reload
+          in: query
+          required: false
+          schema:
+            type: boolean
+          description: Re-read the models config from disk before responding
+      responses:
+        "200":
+          description: Current provider's model list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelsConfig"
+
   /api/tools:
     post:
       summary: Enable or disable a tool
@@ -78,11 +103,12 @@ paths:
       summary: Swap the agent model
       description: >
         Validates the model id against the jsonc config roster for the
-        CURRENT provider and swaps the model used for SUBSEQUENT agent runs
-        in this server process (the process serves one session; the swap
-        rebuilds the agent behind the shared runtime lock and is not
-        persisted — a restart returns to the configured/default model).
-        Responds with the updated state snapshot.
+        CURRENT provider PLUS the per-provider models config list (item41:
+        any model id known to either config is accepted) and swaps the model
+        used for SUBSEQUENT agent runs in this server process (the process
+        serves one session; the swap rebuilds the agent behind the shared
+        runtime lock and is not persisted — a restart returns to the
+        configured/default model). Responds with the updated state snapshot.
       requestBody:
         required: true
         content:
@@ -232,6 +258,14 @@ components:
                 prompt included when loaded), read from the per-session
                 agent-state file (`agent-state/<uuid>/messages.json`);
                 0 when that file is missing or unreadable
+            context_window:
+              type: integer
+              description: >-
+                Current model's context window in tokens from the
+                per-provider models config (item41,
+                `.axonerai/models/<provider>-models.jsonc`, local masks
+                user). Omitted when the config does not know the model —
+                the browser's hardcoded window map stays as the fallback.
           required: [tokens]
         tools:
           type: array
@@ -299,8 +333,44 @@ components:
       properties:
         model:
           type: string
-          description: Model id from the current provider's config roster
+          description: Model id from the current provider's config roster or models config
       required: [model]
+
+    ModelsConfig:
+      type: object
+      description: One provider's models config (item41 JTD schema provider_models.jdt.json)
+      properties:
+        provider:
+          type: string
+        source:
+          type: [string, "null"]
+          enum: [local, user, null]
+          description: Which file won (local masks user); null when no config exists
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              display:
+                type: string
+              context_window:
+                type: integer
+                minimum: 0
+              costs:
+                type: [object, "null"]
+                properties:
+                  input_per_mtok:
+                    type: string
+                  output_per_mtok:
+                    type: string
+                additionalProperties: false
+              offer:
+                type: string
+                description: Freeform offer text (e.g. "2x usage")
+            required: [id, display, context_window]
+      required: [provider, source, models]
 
     SessionInfo:
       type: object

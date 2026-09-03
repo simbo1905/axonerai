@@ -1,0 +1,22 @@
+// Groq models — shared per-provider config (item41).
+{
+  "provider": "groq",
+  "updated": "2026-09-03",
+  "models": [
+    {
+      "id": "qwen/qwen3.8-27b",
+      "display": "Qwen3 8 27B",
+      "context_window": 131072,
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "display": "GPT-OSS 20B",
+      "context_window": 131072,
+    },
+    {
+      "id": "openai/gpt-oss-120b",
+      "display": "GPT-OSS 120B",
+      "context_window": 131072,
+    },
+  ],
+}

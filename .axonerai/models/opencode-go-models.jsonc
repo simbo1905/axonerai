@@ -1,0 +1,14 @@
+// OpenCode Go models — shared per-provider config (item41).
+// NOTE: opencode-zen and opencode-go are one provider (one key) with two
+// endpoints — the accepted exception; they still get one file each.
+{
+  "provider": "opencode-go",
+  "updated": "2026-09-03",
+  "models": [
+    {
+      "id": "glm-5.2",
+      "display": "GLM 5.2",
+      "context_window": 131072,
+    },
+  ],
+}

@@ -4,6 +4,7 @@ pub mod executor;
 pub mod file_session_manager;
 pub mod groq;
 pub mod mistral;
+pub mod models_config;
 pub mod openai;
 pub mod opencode;
 pub mod prompt;

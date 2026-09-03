@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use axonerai::agent::ToolTrace;
+use axonerai::models_config::{self, LoadedModels};
 use axonerai::rollout::{self, Rollout, SessionInfo};
 use axonerai::session::context_tokens_on_disk;
 use axonerai::settings::Settings;
@@ -104,12 +105,79 @@ struct Runtime {
     system_prompt: Option<String>,
 }
 
+/// Shared, swappable provider-models config (item41). Loaded at startup and
+/// reloadable on demand; `None` = no config file for the provider (missing-safe).
+struct ModelsConfigState {
+    provider: String,
+    /// Candidate dirs: local masks user.
+    local: PathBuf,
+    user: PathBuf,
+    inner: RwLock<Option<LoadedModels>>,
+}
+
+impl ModelsConfigState {
+    fn load(provider: &str) -> Self {
+        Self::load_from(
+            &models_config::local_dir(),
+            &models_config::user_dir(),
+            provider,
+        )
+    }
+
+    /// Test seam: build from explicit candidate dirs (local masks user).
+    fn load_from(local: &std::path::Path, user: &std::path::Path, provider: &str) -> Self {
+        let loaded = models_config::load_from_dirs(local, user, provider)
+            .map_err(|e| warn!("provider-models config ignored: {e:#}"))
+            .unwrap_or(None);
+        Self {
+            provider: provider.to_string(),
+            local: local.to_path_buf(),
+            user: user.to_path_buf(),
+            inner: RwLock::new(loaded),
+        }
+    }
+
+    fn get(&self) -> Option<LoadedModels> {
+        self.inner.read().ok().and_then(|guard| guard.clone())
+    }
+
+    /// The reload path: re-read the provider's models config from disk.
+    /// A corrupt file keeps the previous load (warn, never crash).
+    fn reload(&self) {
+        match models_config::load_from_dirs(&self.local, &self.user, &self.provider) {
+            Ok(loaded) => {
+                if let Ok(mut guard) = self.inner.write() {
+                    *guard = loaded;
+                }
+            }
+            Err(e) => warn!("provider-models reload ignored: {e:#}"),
+        }
+    }
+
+    /// Context window for one model id, if the config knows it.
+    fn context_window(&self, model_id: &str) -> Option<u32> {
+        self.get().and_then(|l| l.context_window(model_id))
+    }
+
+    /// Does the models config know this model id? (Unknown provider-config
+    /// ids are accepted for /api/model swaps — config ADDS to the roster.)
+    fn knows_model(&self, model_id: &str) -> bool {
+        self.get()
+            .map(|l| l.find(model_id).is_some())
+            .unwrap_or(false)
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     web_root: PathBuf,
     provider: String,
     /// jsonc config (roster validation for /api/model and agent rebuilds).
     config: Arc<AppConfig>,
+    /// Per-provider models config (item41): context windows + costs + offers,
+    /// `.axonerai/models/<provider>-models.jsonc` (local masks user). Reloaded
+    /// on demand by `GET /api/models?reload=1`.
+    models_cfg: Arc<ModelsConfigState>,
     /// Sessions dir: rollout + per-session agent-state home.
     sessions_dir: PathBuf,
     /// Swappable model/agent/system-prompt state (see [`Runtime`]).
@@ -343,6 +411,7 @@ async fn serve(
     .ok();
 
     let agent_state_dir = sessions_dir.join("agent-state");
+    let models_cfg = Arc::new(ModelsConfigState::load(&provider_name));
     let runtime = Arc::new(RwLock::new(Runtime {
         model: model_id.clone(),
         agent,
@@ -352,6 +421,7 @@ async fn serve(
         web_root,
         provider: provider_name.clone(),
         config: Arc::new(config),
+        models_cfg,
         sessions_dir: sessions_dir.clone(),
         runtime,
         verbose,
@@ -376,6 +446,7 @@ async fn serve(
         .route("/api/session/:uuid", get(api_session_catchup))
         .route("/api/session/:uuid/tail", get(api_session_tail))
         .route("/api/state", get(api_state))
+        .route("/api/models", get(api_models))
         .route("/api/tools", post(api_tools_toggle))
         .route("/api/model", post(api_model_swap))
         .route("/openapi.yaml", get(openapi_yaml))
@@ -531,6 +602,11 @@ struct RepoSnapshot {
 #[derive(serde::Serialize)]
 struct ContextSnapshot {
     tokens: u64,
+    /// Current model's context window in tokens from the provider-models
+    /// config (item41); null when the config doesn't know the model. The
+    /// browser's hardcoded window map stays as the fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -607,6 +683,7 @@ fn state_snapshot(state: &AppState) -> StateSnapshot {
                 &state.session_id,
                 runtime.system_prompt.as_deref(),
             ),
+            context_window: state.models_cfg.context_window(&runtime.model),
         },
         tools: state.registry.list_tools_info(),
         mcp: mcp_servers(),
@@ -644,6 +721,67 @@ fn current_branch(cwd: &std::path::Path) -> Option<String> {
     } else {
         Some(head.chars().take(7).collect())
     }
+}
+
+// --- Models config (GET /api/models) ----------------------------------------
+
+/// One model row of the /api/models response (the item41 config shape).
+#[derive(serde::Serialize)]
+struct ModelsConfigEntry {
+    id: String,
+    display: String,
+    context_window: u32,
+    costs: Option<axonerai::models_config::ModelCosts>,
+    offer: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ModelsConfigResponse {
+    provider: String,
+    /// "local" | "user" | null — which file won (local masks user).
+    source: Option<String>,
+    /// Empty when no config file exists for the provider (missing-safe).
+    models: Vec<ModelsConfigEntry>,
+}
+
+/// GET /api/models — the current provider's model list from the per-provider
+/// models config (item41), for the /models tree. `?reload=1` re-reads the
+/// config from disk first (the on-demand reload path). No config file →
+/// `{provider, source: null, models: []}`.
+async fn api_models(State(state): State<AppState>, Query(query): Query<ModelsQuery>) -> Response {
+    if query.reload.unwrap_or(false) {
+        state.models_cfg.reload();
+    }
+
+    let response = match state.models_cfg.get() {
+        Some(loaded) => ModelsConfigResponse {
+            provider: loaded.config.provider.clone(),
+            source: Some(loaded.source.as_str().to_string()),
+            models: loaded
+                .config
+                .models
+                .iter()
+                .map(|m| ModelsConfigEntry {
+                    id: m.id.clone(),
+                    display: m.display.clone(),
+                    context_window: m.context_window,
+                    costs: m.costs.clone(),
+                    offer: m.offer.clone(),
+                })
+                .collect(),
+        },
+        None => ModelsConfigResponse {
+            provider: state.provider.clone(),
+            source: None,
+            models: vec![],
+        },
+    };
+    Json(response).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct ModelsQuery {
+    reload: Option<bool>,
 }
 
 // --- Tool toggle (POST /api/tools) -----------------------------------------
@@ -689,9 +827,10 @@ struct ModelSwapBody {
 
 /// POST /api/model `{"model": "<id>"}` — swap the model used for SUBSEQUENT
 /// agent runs, validating the id against the jsonc config roster for the
-/// CURRENT provider. Unknown model → 400 + error frame (same shape as
-/// /api/tools). Responds with the updated /api/state snapshot so the
-/// browser's footer and panel reflect the swap immediately.
+/// CURRENT provider, plus (item41) the per-provider models config list: any
+/// model id known to either config is accepted. Unknown model → 400 + error
+/// frame (same shape as /api/tools). Responds with the updated /api/state
+/// snapshot so the browser's footer and panel reflect the swap immediately.
 ///
 /// Swap scope: PROCESS-GLOBAL, which is also per-session here because this
 /// server process serves exactly one session (`AppState.session_id`). At
@@ -707,7 +846,12 @@ async fn api_model_swap(
     State(state): State<AppState>,
     Json(body): Json<ModelSwapBody>,
 ) -> Response {
-    if state.config.find_model(&state.provider, &body.model).is_err() {
+    let known = state
+        .config
+        .find_model(&state.provider, &body.model)
+        .is_ok()
+        || state.models_cfg.knows_model(&body.model);
+    if !known {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -1322,10 +1466,12 @@ mod tests {
 
     /// Build a minimal AppState for handler tests: temp rollout dir, mistral
     /// config with a direct api_key (no env/network), agent prebuilt for the
-    /// default roster model.
+    /// default roster model, and a per-provider models config loaded from a
+    /// temp `.axonerai/models` dir (item41) that knows a context window for
+    /// the roster's second model only — mirroring "config ADDS to the
+    /// fallbacks".
     fn test_state() -> AppState {
-        let dir = std::env::temp_dir()
-            .join(format!("axoner-web-test-{}", uuid::Uuid::now_v7()));
+        let dir = std::env::temp_dir().join(format!("axoner-web-test-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let session_id = uuid::Uuid::now_v7().to_string();
         let rollout = Rollout::create(&dir, &session_id).unwrap();
@@ -1342,6 +1488,28 @@ mod tests {
                 thinking_levels: vec![],
             });
         }
+
+        // item41: a models config file that knows zai-glm-5-2's window.
+        let models_dir = dir.join(".axonerai/models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        std::fs::write(
+            models_dir.join("mistral-models.jsonc"),
+            r#"{
+                "provider": "mistral",
+                "updated": "2026-09-03",
+                "models": [
+                    {"id": "zai-glm-5-2", "display": "GLM-5.2", "context_window": 32768,
+                     "costs": {"input_per_mtok": "$0.50", "output_per_mtok": "$1.50"}}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let models_cfg = Arc::new(ModelsConfigState::load_from(
+            &models_dir,
+            &dir.join("user-models"),
+            "mistral",
+        ));
+
         let registry = build_registry();
         let agent = build_agent_from_config(
             &config,
@@ -1357,6 +1525,7 @@ mod tests {
             web_root: dir.clone(),
             provider: "mistral".to_string(),
             config: Arc::new(config),
+            models_cfg,
             sessions_dir: dir.clone(),
             runtime: Arc::new(RwLock::new(Runtime {
                 model: "zai-glm-5-2".to_string(),
@@ -1423,5 +1592,130 @@ mod tests {
 
         // A refused swap leaves the runtime untouched.
         assert_eq!(state.runtime.read().unwrap().model, "zai-glm-5-2");
+    }
+
+    // --- item41: models config on the wire ----------------------------------
+
+    /// GET /api/state footer percent follows the models config: the snapshot
+    /// carries the current model's `context_window` from the config (the
+    /// item40 hardcoded browser fallback only fires when this is absent).
+    #[tokio::test]
+    async fn api_state_context_window_follows_models_config() {
+        let state = test_state();
+        let snapshot = state_snapshot(&state);
+
+        assert_eq!(
+            snapshot.context.context_window,
+            Some(32768),
+            "the config's window (not the hardcoded 131072) wins"
+        );
+
+        // A model the config does not know reports no window (the browser
+        // then falls back to its hardcoded map).
+        state.runtime.write().unwrap().model = "mistral-medium-latest".to_string();
+        let snapshot = state_snapshot(&state);
+        assert_eq!(snapshot.context.context_window, None);
+    }
+
+    /// GET /api/models serves the current provider's config list, noting the
+    /// winning source; `?reload=1` re-reads from disk.
+    #[tokio::test]
+    async fn api_models_serves_config_with_source() {
+        let state = test_state();
+
+        let response = api_models(State(state.clone()), Query(ModelsQuery { reload: None })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["provider"], "mistral");
+        assert_eq!(json["source"], "local");
+        let models = json["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "zai-glm-5-2");
+        assert_eq!(models[0]["context_window"], 32768);
+        assert_eq!(models[0]["costs"]["input_per_mtok"], "$0.50");
+
+        // The reload path picks up an on-disk change.
+        let new_body = r#"{
+            "provider": "mistral",
+            "updated": "2026-09-03",
+            "models": [{"id": "zai-glm-5-2", "display": "GLM-5.2", "context_window": 65536}]
+        }"#;
+        let models_dir = state.web_root.join(".axonerai/models");
+        std::fs::write(models_dir.join("mistral-models.jsonc"), new_body).unwrap();
+
+        let response = api_models(
+            State(state.clone()),
+            Query(ModelsQuery { reload: Some(true) }),
+        )
+        .await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["models"][0]["context_window"], 65536,
+            "?reload=1 re-reads disk"
+        );
+    }
+
+    /// POST /api/model accepts any model id in the provider's models config
+    /// list even when the jsonc roster does not know it; still 400 when
+    /// neither config knows the id.
+    #[tokio::test]
+    async fn api_model_swap_accepts_models_config_only_ids() {
+        let mut state = test_state();
+        // Extend the models config (not the roster) with a new model id.
+        let new_body = r#"{
+            "provider": "mistral",
+            "updated": "2026-09-03",
+            "models": [
+                {"id": "zai-glm-5-2", "display": "GLM-5.2", "context_window": 32768},
+                {"id": "mistral-large-latest", "display": "Mistral Large", "context_window": 131072}
+            ]
+        }"#;
+        let models_dir = state.web_root.join(".axonerai/models");
+        std::fs::write(models_dir.join("mistral-models.jsonc"), new_body).unwrap();
+        state.models_cfg.reload();
+
+        assert!(
+            state
+                .config
+                .find_model("mistral", "mistral-large-latest")
+                .is_err(),
+            "precondition: the roster does NOT know this id"
+        );
+
+        let response = api_model_swap(
+            State(state.clone()),
+            Json(ModelSwapBody {
+                model: "mistral-large-latest".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "config ADDS to the roster"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["model"], "mistral-large-latest");
+        assert_eq!(state.runtime.read().unwrap().model, "mistral-large-latest");
+
+        // Unknown to BOTH configs → 400, unchanged.
+        let response = api_model_swap(
+            State(state.clone()),
+            Json(ModelSwapBody {
+                model: "not-in-any-config".to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(state.runtime.read().unwrap().model, "mistral-large-latest");
     }
 }

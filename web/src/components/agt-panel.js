@@ -1,6 +1,6 @@
 // @ts-check
 import { footerSegments, formatFooter } from "../footer.mjs";
-import { contextWindowFor } from "../models.mjs";
+import { resolveContextWindow } from "../models.mjs";
 
 /**
  * Right-hand TUI-style side panel: session title, Context / MCP / LSP / Todo /
@@ -33,7 +33,7 @@ import { contextWindowFor } from "../models.mjs";
  * @property {string} model
  * @property {{ id: string, title: string }} session
  * @property {{ path: string | null, branch: string | null }} repo
- * @property {{ tokens: number }} context
+ * @property {{ tokens: number, context_window?: number }} context
  * @property {ToolState[]} tools
  * @property {Array<{ name: string, status: string }>} mcp
  * @property {unknown[]} lsp
@@ -350,7 +350,9 @@ export class AgtPanel extends HTMLElement {
     const footer = this.#footerEl;
     if (!footer) return;
     const segments = footerSegments(snapshot);
-    const contextWindow = contextWindowFor(segments.model);
+    // item41: the snapshot's config-driven context_window wins; the
+    // hardcoded map in web/src/models.mjs is the fallback.
+    const contextWindow = resolveContextWindow(snapshot);
     const { right } = formatFooter(snapshot, contextWindow);
     const left = document.createElement("span");
     left.className = "agt-p-footer-left";

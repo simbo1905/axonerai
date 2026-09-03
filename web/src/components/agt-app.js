@@ -3,7 +3,7 @@ import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
 import { dispatch, registerHandler } from "../dispatch.mjs";
 import { createStore } from "../store.mjs";
 import { COMMANDS, parseInput } from "../commands.mjs";
-import { contextWindowFor, modelsForProvider } from "../models.mjs";
+import { contextWindowFor, fetchProviderModels, modelsForProvider } from "../models.mjs";
 import { installConsoleBus } from "../console-bus.mjs";
 import {
   extractToolCallMeta,
@@ -493,10 +493,22 @@ export class AgtApp extends HTMLElement {
           console.error("[slash] error: /api/state unavailable");
           return;
         }
-        const models = modelsForProvider(snapshot.provider).map((id) => ({
-          id,
-          contextWindow: contextWindowFor(id),
-        }));
+        // item41: the server's per-provider models config (local masks user)
+        // wins; the hardcoded roster is the fallback (server down / no
+        // config file / malformed payload).
+        const remote = await fetchProviderModels();
+        const models =
+          remote &&
+          remote.provider === snapshot.provider &&
+          remote.models.length > 0
+            ? remote.models.map((row) => ({
+                id: row.id,
+                contextWindow: row.contextWindow,
+              }))
+            : modelsForProvider(snapshot.provider).map((id) => ({
+                id,
+                contextWindow: contextWindowFor(id),
+              }));
         panel.showModels(models);
         console.log("[slash] models: opened the Models tree");
         return;
