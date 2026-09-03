@@ -192,7 +192,9 @@ components:
               description: >-
                 Model context estimate: bytes/4 (floor) over the JSON
                 serialization of the session's provider messages (system
-                prompt included when loaded); 0 when there are no messages
+                prompt included when loaded), read from the per-session
+                agent-state file (`agent-state/<uuid>/messages.json`);
+                0 when that file is missing or unreadable
           required: [tokens]
         tools:
           type: array

@@ -116,12 +116,28 @@ let provider = OpenCodeProvider::new(api_key, endpoint, model);
 
 ## Built-in Tools
 
-- **Calculator** - Basic arithmetic operations
+- **Calculator** - Arithmetic expression evaluator. Input shape is
+  `{"expression": "…"}`; the grammar supports `+ - * / % ^` (with `^`
+  right-associative), postfix `!` factorial (overflow-guarded, max operand 20),
+  parentheses and unary minus.
 - **WebSearch** - Search the web via the Tavily API
 - **WebFetch** - Fetch and extract the text content of a web page via the Tavily API
-- **WriteFile** - Write content to files
+- **WriteFile** - Writes text files, jailed to `.axonerai/scratch/`: paths are
+  relative to that directory; absolute paths, `..` traversal and symlinks that
+  escape the jail are rejected.
 
 The web tools (WebSearch and WebFetch) are registered when `TAVILY_API_KEY` is set.
+
+## Agent Loop
+
+The agent speaks the native tool-call protocol of each provider (no
+JSON-in-text parsing): the model returns `tool_calls`, the server executes
+them, and each result goes back as a `role:"tool"` message. Tool failures are
+captured as error results and fed back to the model — a failing tool call
+never aborts the run. Per-session message state lives under
+`sessions/agent-state/<uuid>/` (`messages.json`); the rollout under
+`sessions/<uuid>.jsonlts` is a separate, full-fidelity trace of protocol
+events.
 
 ## Running the Demo
 
@@ -177,19 +193,41 @@ The web demo requires:
   timestamp are replayed).
 - `/rename <title>` renames the session (persisted to the rollout).
 
-## Slash commands & side panel
+## Slash commands, side panel & devtools console
 
-The right-hand TUI-style side panel renders slash-command responses and status
-trees (Context, MCP, LSP, Todo, Built-ins). Commands are typed in the composer:
+The right-hand TUI-style side panel renders status trees (Context, MCP, LSP,
+Todo, Slash, Built-ins) plus a per-session tool toggle list. Commands are typed
+in the composer:
 
 - `/model` — show the active provider/model.
 - `/built-ins` — open the Built-ins tree and toggle tools per session.
 - `/verbose` — toggle verbose output rendering (tool-call trace lines).
 - `/rename <title>` — rename the session.
+- `/console` — open the devtools console popup (`/console.html`).
 - `/help` — list the commands.
 
-Responses go to the panel; only one tree is expanded at a time (the others
-collapse).
+A `/` typed as the FIRST character is a command; a slash anywhere else is
+ordinary chat. Slash commands run entirely in the browser: the prompt is never
+sent to the model. Command results go to the devtools console bus
+(`console.log`-style lines); the panel Slash tree keeps only the invocation
+echo (e.g. `/model`).
+
+Panel notes: **Context** shows real provider-message tokens — a bytes/4
+estimate over the per-session agent-state messages (system prompt included
+when loaded), 0 before any model context exists. **MCP** lists the Tavily
+facade (`tavily connected`) when `TAVILY_API_KEY` is set — built-in features
+deliberately exposed as MCP so agents can run them; there is no MCP host
+process. **LSP** and **Todo** show `(none)` until wired.
+
+The devtools console is a tee of the page's own `console` calls:
+`web/src/console-bus.mjs` wraps log/info/warn/error and broadcasts frozen
+envelopes over the `agt-console` BroadcastChannel; a dedicated spool worker
+(`web/assets/console-spool-worker.js`) persists them into IndexedDB as a ring
+buffer of the newest 2000 entries and re-broadcasts each on
+`agt-console-spooled` only after the IndexedDB transaction commits
+(`tx.oncomplete`); the `/console.html` popup (`web/src/components/agt-console-app.js`,
+with merge/dedupe and autoscroll helpers in `web/src/console-model.mjs`)
+subscribes to that spooled stream and replays the backlog on open.
 
 ## Control plane
 

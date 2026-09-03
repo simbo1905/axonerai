@@ -52,6 +52,14 @@ Working rules for agents operating in this repository.
   the browser only ever receives ≤1024-byte abridged payloads.
 - WS egress for history/catch-up is line-format `ts\0type\0text` — the `_type`
   segment precedes the JSON payload (payload always starts with `{`).
+- Agent loop convention: native `tool_calls` + `role:"tool"` round-trip per
+  provider (no JSON-in-text tool parsing). Tool errors are tool results fed
+  back to the model, never run aborts. Tool state is per-session under
+  `sessions/agent-state/<uuid>/`.
+- Console-bus convention: producers tee validated, frozen envelopes; the
+  worker persists then re-broadcasts after commit (the decoupling rule's last
+  sentence below). Modules: `web/src/console-bus.mjs`,
+  `web/assets/console-spool-worker.js`, `web/src/console-model.mjs`.
 - Do not write tests that cross a decoupling boundary. BroadcastChannel,
   worker, and IndexedDB boundaries exist so that each side can be tested
   alone. Test pure logic in node:test; test the DOM in a single page. Never
