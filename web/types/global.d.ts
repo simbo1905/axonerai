@@ -56,6 +56,7 @@ declare global {
       emit(frame: unknown): void;
       renames: string[];
       postCalls: Array<{ name: string; enabled: boolean }>;
+      modelPosts: Array<{ model: string }>;
     };
     /** Headless pretty-printer smoke results (pretty.headless.mjs). */
     __PRETTY_TEST_RESULTS__?: {

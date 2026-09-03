@@ -98,6 +98,9 @@ let fixture = await (await realFetch("/test/fixtures/state.json")).json();
 /** @type {Array<{ name: string, enabled: boolean }>} */
 const postCalls = [];
 
+/** @type {Array<{ model: string }>} */
+const modelPosts = [];
+
 window.fetch = /** @type {typeof window.fetch} */ (
   async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
@@ -118,6 +121,27 @@ window.fetch = /** @type {typeof window.fetch} */ (
       );
       if (tool) tool.enabled = body.enabled;
       return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === "/api/model" && init && init.method === "POST") {
+      const body = /** @type {{ model: string }} */ (
+        JSON.parse(String(init.body))
+      );
+      modelPosts.push(body);
+      if (body.model === "bogus-model") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error: "unknown model 'bogus-model' for provider 'mistral'",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      // Emulate the server swap: the response IS the updated snapshot.
+      fixture.model = body.model;
+      return new Response(JSON.stringify(fixture), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -185,6 +209,7 @@ window.AgtClient = {
       emit,
       renames,
       postCalls,
+      modelPosts,
     };
     captured.onOpen();
     await Promise.resolve();
@@ -256,9 +281,14 @@ function slashText() {
   return sectionText("Slash");
 }
 
-function footerText() {
-  const footer = shadow().querySelector(".agt-p-footer");
-  return footer ? footer.textContent ?? "" : "";
+function footerLeftText() {
+  const left = shadow().querySelector(".agt-p-footer-left");
+  return left ? left.textContent ?? "" : "";
+}
+
+function footerRightText() {
+  const right = shadow().querySelector(".agt-p-footer-right");
+  return right ? right.textContent ?? "" : "";
 }
 
 function titleText() {
@@ -309,12 +339,17 @@ async function pressKey(key) {
 
 // ----------------------------------------------------------------- tests
 
-await test("panel boots from /api/state: footer path:branch, MCP tavily Connected, LSP (none)", async () => {
+await test("panel boots from /api/state: footer status bar, MCP tavily Connected, LSP (none)", async () => {
   await waitFor(
-    () => footerText() === "/Users/Shared/axonerai:simbo1905",
-    "footer path:branch",
+    () => footerLeftText() === "Chat · zai-glm-5-2 mistral · think off",
+    "footer status bar",
   );
-  assertEqual(footerText(), "/Users/Shared/axonerai:simbo1905", "footer");
+  assertEqual(
+    footerLeftText(),
+    "Chat · zai-glm-5-2 mistral · think off",
+    "footer left",
+  );
+  assertEqual(footerRightText(), "12.3K (9%)", "footer right context use");
   await waitFor(() => titleText() === "axonerai", "session title");
   assert(
     sectionText("MCP").includes("tavily") &&
@@ -344,7 +379,7 @@ await test("typing / opens the menu with all 6 commands", async () => {
   assertEqual(
     options.map((o) => o.textContent).join("|"),
     [
-      "/modelshow the current model and provider",
+      "/modelslist models for the current provider and switch",
       "/built-insshow the built-in tools with on/off toggles",
       "/verbosetoggle verbose output rendering",
       "/renamerename the session: /rename <title>",
@@ -400,26 +435,64 @@ await test("menu closes when input no longer starts with /", async () => {
   assert(menuEl().hidden === true, "menu should close for non-slash input");
 });
 
-await test("Enter on /model runs it: Slash shows the invocation echo, results go to the console, other trees collapse", async () => {
+await test("Enter on /models opens the Models tree; other trees collapse", async () => {
   assert(isCollapsed("Context") === false, "Context expanded before command");
   assert(isCollapsed("MCP") === false, "MCP expanded before command");
-  await type("/model");
+  await type("/models");
   await pressKey("Enter");
-  await waitFor(() => slashText().includes("/model"), "slash invocation echo");
+  await waitFor(() => slashText().includes("/models"), "slash invocation echo");
+  await waitFor(() => isCollapsed("Models") === false, "Models expanded");
   assertEqual(ta().value, "", "input cleared after running the command");
-  // item32: the RESULT goes to the console bus (devtools popup); the Slash
-  // tree keeps only the invocation echo.
+  const rows = [...section("Models").querySelectorAll(".agt-p-model")];
+  assertEqual(rows.length, 2, "mistral roster rows rendered");
   assert(
-    !slashText().includes("model: "),
-    "model result must not render in the Slash tree",
+    rows[0].textContent?.includes("zai-glm-5-2") &&
+      rows[0].textContent?.includes("131K"),
+    `first row should be zai-glm-5-2 with its context window, got ${JSON.stringify(rows[0].textContent)}`,
+  );
+  assert(
+    rows[1].textContent?.includes("mistral-medium-latest") &&
+      rows[1].textContent?.includes("131K"),
+    `second row should be mistral-medium-latest with its context window, got ${JSON.stringify(rows[1].textContent)}`,
   );
   assert(isCollapsed("Context"), "Context should be collapsed after a command");
   assert(isCollapsed("MCP"), "MCP should be collapsed after a command");
   assert(isCollapsed("LSP"), "LSP should be collapsed after a command");
   assert(isCollapsed("Todo"), "Todo should be collapsed after a command");
+  assert(isCollapsed("Slash"), "Slash should be collapsed after a command");
   assert(
-    isCollapsed("Slash") === false,
-    "Slash section should be expanded",
+    isCollapsed("Built-ins"),
+    "Built-ins should be collapsed after a command",
+  );
+});
+
+await test("selecting a Models row POSTs /api/model and the footer reflects the swap", async () => {
+  const rows = [...section("Models").querySelectorAll(".agt-p-model")];
+  const target = need(
+    rows.find((row) => row.textContent?.includes("mistral-medium-latest")),
+    "mistral-medium-latest row missing",
+  );
+  target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await waitFor(() => modelPosts.length === 1, "POST /api/model call");
+  assertEqual(
+    JSON.stringify(modelPosts[0]),
+    JSON.stringify({ model: "mistral-medium-latest" }),
+    "POST /api/model body",
+  );
+  await waitFor(
+    () => footerLeftText() === "Chat · mistral-medium-latest mistral · think off",
+    "footer model after swap",
+  );
+  assertEqual(
+    footerLeftText(),
+    "Chat · mistral-medium-latest mistral · think off",
+    "footer left after swap",
+  );
+  assertEqual(footerRightText(), "12.3K (9%)", "footer right after swap");
+  assertEqual(
+    /** @type {any} */ (app).snapshot?.model,
+    "mistral-medium-latest",
+    "app snapshot model swapped",
   );
 });
 
@@ -500,7 +573,7 @@ await test("/help runs and leaves only the invocation echo in the Slash tree", a
   // item32: the command list goes to the console bus; the Slash tree keeps
   // only the echoed command line.
   assert(
-    !slashText().includes("/model —"),
+    !slashText().includes("/models —"),
     "help output must not render in the Slash tree",
   );
 });

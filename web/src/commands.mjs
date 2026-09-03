@@ -7,9 +7,8 @@
  * each command (fetch/WS control plane — commands NEVER go to the model).
  *
  * Run signatures (implemented in web/src/components/agt-app.js):
- * - model:     `run() => Promise<string>` — GET /api/state →
- *              `model: <model> (provider: <provider>)` (result goes to the
- *              console bus; the panel keeps an invocation echo).
+ * - models:    `run() => void` — opens the panel Models tree (models for the
+ *              current provider); selecting a row POSTs /api/model.
  * - built-ins: `run() => void` — opens the panel Built-ins tree.
  * - verbose:   `run() => string` — toggles the UI verbose flag and reports
  *              `verbose: on|off`; fires `agt-verbose-changed` on window.
@@ -59,8 +58,8 @@
  */
 export const COMMANDS = Object.freeze([
   Object.freeze({
-    name: "model",
-    description: "show the current model and provider",
+    name: "models",
+    description: "list models for the current provider and switch",
   }),
   Object.freeze({
     name: "built-ins",

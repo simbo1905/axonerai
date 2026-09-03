@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -94,15 +94,29 @@ enum SessionAction {
     List,
 }
 
+/// Swappable agent runtime shared behind a lock so a /api/model swap is
+/// visible to every handler clone and to every subsequent WS prompt run
+/// (AppState is cloned per request, so the swappable state must live behind
+/// interior mutability).
+struct Runtime {
+    model: String,
+    agent: Option<Arc<Agent>>,
+    system_prompt: Option<String>,
+}
+
 #[derive(Clone)]
 struct AppState {
     web_root: PathBuf,
-    agent: Option<Arc<Agent>>,
+    provider: String,
+    /// jsonc config (roster validation for /api/model and agent rebuilds).
+    config: Arc<AppConfig>,
+    /// Sessions dir: rollout + per-session agent-state home.
+    sessions_dir: PathBuf,
+    /// Swappable model/agent/system-prompt state (see [`Runtime`]).
+    runtime: Arc<RwLock<Runtime>>,
     verbose: u8,
     rollout: Arc<Rollout>,
     session_id: String,
-    provider: String,
-    model: String,
     /// Registry clone sharing tool instances and suppression state with the
     /// agent's registry (both fields are Arc-backed in `ToolRegistry`).
     registry: ToolRegistry,
@@ -110,9 +124,6 @@ struct AppState {
     /// (`<sessions_dir>/agent-state/<uuid>/messages.json`), the same files
     /// the agent persists via `FileSessionManager`.
     agent_state_dir: PathBuf,
-    /// The system prompt sent to the provider with every completion
-    /// (included in the context estimate when loaded).
-    system_prompt: Option<String>,
 }
 
 impl AppState {
@@ -332,17 +343,22 @@ async fn serve(
     .ok();
 
     let agent_state_dir = sessions_dir.join("agent-state");
+    let runtime = Arc::new(RwLock::new(Runtime {
+        model: model_id.clone(),
+        agent,
+        system_prompt: system_prompt.clone(),
+    }));
     let state = AppState {
         web_root,
-        agent,
+        provider: provider_name.clone(),
+        config: Arc::new(config),
+        sessions_dir: sessions_dir.clone(),
+        runtime,
         verbose,
         rollout: session_rollout,
         session_id: session_id.clone(),
-        provider: provider_name.clone(),
-        model: model_id.clone(),
         registry,
         agent_state_dir,
-        system_prompt,
     };
 
     let assets_dir = state.web_root.join("assets");
@@ -361,6 +377,7 @@ async fn serve(
         .route("/api/session/:uuid/tail", get(api_session_tail))
         .route("/api/state", get(api_state))
         .route("/api/tools", post(api_tools_toggle))
+        .route("/api/model", post(api_model_swap))
         .route("/openapi.yaml", get(openapi_yaml))
         .nest_service("/assets", assets_service)
         .nest_service("/src", src_service)
@@ -386,7 +403,7 @@ async fn serve(
     println!("  Web UI:     http://{actual_addr}/");
     println!("  WebSocket:  ws://{actual_addr}/ws");
     println!("  Web root:   {}", state.web_root.display());
-    if state.agent.is_none() {
+    if state.runtime.read().unwrap().agent.is_none() {
         println!(
             "  Note: no provider configured (set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY)"
         );
@@ -561,13 +578,21 @@ fn session_title(state: &AppState) -> String {
 /// (ready/session_meta/echo) are excluded entirely; a session with no
 /// messages reports 0.
 async fn api_state(State(state): State<AppState>) -> Response {
+    Json(state_snapshot(&state)).into_response()
+}
+
+/// Build the control-plane snapshot the UI panel renders. Field order
+/// matches the pinned API contract. Model/system-prompt state is read from
+/// the shared [`Runtime`] so a /api/model swap is reflected immediately.
+fn state_snapshot(state: &AppState) -> StateSnapshot {
+    let runtime = state.runtime.read().unwrap();
     // Title resolution must match the sessions index: the last `session_rename`
     // wins over the first `session_meta` (Rollout::title() only sees the meta).
-    let title = session_title(&state);
+    let title = session_title(state);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let snapshot = StateSnapshot {
+    StateSnapshot {
         provider: state.provider.clone(),
-        model: state.model.clone(),
+        model: runtime.model.clone(),
         session: SessionSnapshot {
             id: state.session_id.clone(),
             title,
@@ -580,15 +605,14 @@ async fn api_state(State(state): State<AppState>) -> Response {
             tokens: context_tokens_on_disk(
                 &state.agent_state_dir,
                 &state.session_id,
-                state.system_prompt.as_deref(),
+                runtime.system_prompt.as_deref(),
             ),
         },
         tools: state.registry.list_tools_info(),
         mcp: mcp_servers(),
         lsp: vec![],
         todo: serde_json::Value::Null,
-    };
-    Json(snapshot).into_response()
+    }
 }
 
 /// Registered (fake) MCP servers: `tavily` is "connected" iff its API key is
@@ -654,6 +678,72 @@ async fn api_tools_toggle(
     }
 
     Json(serde_json::json!({"ok": true})).into_response()
+}
+
+// --- Model swap (POST /api/model) -------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ModelSwapBody {
+    model: String,
+}
+
+/// POST /api/model `{"model": "<id>"}` — swap the model used for SUBSEQUENT
+/// agent runs, validating the id against the jsonc config roster for the
+/// CURRENT provider. Unknown model → 400 + error frame (same shape as
+/// /api/tools). Responds with the updated /api/state snapshot so the
+/// browser's footer and panel reflect the swap immediately.
+///
+/// Swap scope: PROCESS-GLOBAL, which is also per-session here because this
+/// server process serves exactly one session (`AppState.session_id`). At
+/// boot, provider/model are threaded into `build_agent_from_config`, which
+/// bakes the model id into the provider inside the `Arc<Agent>`; a swap
+/// therefore REBUILDS the agent exactly the same way (same provider, new
+/// model id, shared tool registry, same per-session `FileSessionManager`, and
+/// a freshly composed system prompt for the new model) and stores it in
+/// `AppState.runtime` behind a `RwLock`, so every handler clone and the next
+/// `ws_session` prompt run read the same swap. The swap is NOT persisted: a
+/// server restart returns to the configured/default model.
+async fn api_model_swap(
+    State(state): State<AppState>,
+    Json(body): Json<ModelSwapBody>,
+) -> Response {
+    if state.config.find_model(&state.provider, &body.model).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": format!(
+                    "unknown model '{}' for provider '{}'",
+                    body.model, state.provider
+                ),
+            })),
+        )
+            .into_response();
+    }
+
+    let system_prompt = Some(axonerai::prompt::load_system_prompt(
+        &state.provider,
+        &body.model,
+    ));
+    let agent = build_agent_from_config(
+        &state.config,
+        &state.provider,
+        &body.model,
+        state.registry.clone(),
+        &state.sessions_dir,
+        &state.session_id,
+        system_prompt.clone(),
+    )
+    .ok();
+
+    {
+        let mut runtime = state.runtime.write().unwrap();
+        runtime.model = body.model.clone();
+        runtime.system_prompt = system_prompt;
+        runtime.agent = agent;
+    }
+
+    Json(state_snapshot(&state)).into_response()
 }
 
 // --- OpenAPI document ------------------------------------------------------
@@ -898,7 +988,15 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                 continue;
                             }
 
-                            let Some(agent) = &state.agent else {
+                            // Read the (swappable) agent from the shared
+                            // runtime at prompt time so a /api/model swap
+                            // applies to this and every subsequent run.
+                            let agent = state
+                                .runtime
+                                .read()
+                                .ok()
+                                .and_then(|runtime| runtime.agent.clone());
+                            let Some(agent) = &agent else {
                                 send_error(
                                     &state,
                                     &mut socket,
@@ -1220,5 +1318,110 @@ mod tests {
         for chat in ["", "what is 2^4", "the /model flag", "  use /help maybe  "] {
             assert!(!is_slash_command(chat), "'{chat}' must be chat");
         }
+    }
+
+    /// Build a minimal AppState for handler tests: temp rollout dir, mistral
+    /// config with a direct api_key (no env/network), agent prebuilt for the
+    /// default roster model.
+    fn test_state() -> AppState {
+        let dir = std::env::temp_dir()
+            .join(format!("axoner-web-test-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session_id = uuid::Uuid::now_v7().to_string();
+        let rollout = Rollout::create(&dir, &session_id).unwrap();
+        let mut config = AppConfig::defaults();
+        {
+            // Mirror the .axonerai/axonerai.jsonc mistral roster (the
+            // built-in defaults only carry the one model).
+            let mistral = config.providers.get_mut("mistral").unwrap();
+            mistral.api_key = Some("test-key".to_string());
+            mistral.models.push(axonerai::config::ModelConfig {
+                id: "mistral-medium-latest".to_string(),
+                name: Some("Mistral Medium".to_string()),
+                thinking: false,
+                thinking_levels: vec![],
+            });
+        }
+        let registry = build_registry();
+        let agent = build_agent_from_config(
+            &config,
+            "mistral",
+            "zai-glm-5-2",
+            registry.clone(),
+            &dir,
+            &session_id,
+            None,
+        )
+        .ok();
+        AppState {
+            web_root: dir.clone(),
+            provider: "mistral".to_string(),
+            config: Arc::new(config),
+            sessions_dir: dir.clone(),
+            runtime: Arc::new(RwLock::new(Runtime {
+                model: "zai-glm-5-2".to_string(),
+                agent,
+                system_prompt: None,
+            })),
+            verbose: 0,
+            rollout: Arc::new(rollout),
+            session_id,
+            registry,
+            agent_state_dir: dir.join("agent-state"),
+        }
+    }
+
+    #[tokio::test]
+    async fn api_model_swap_updates_state_and_subsequent_runs() {
+        let state = test_state();
+        let response = api_model_swap(
+            State(state.clone()),
+            Json(ModelSwapBody {
+                model: "mistral-medium-latest".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["model"], "mistral-medium-latest");
+        assert_eq!(json["provider"], "mistral");
+        assert_eq!(json["session"]["id"], state.session_id);
+
+        // The swap is visible to any later reader of the shared runtime: the
+        // next prompt run rebuilds from this and /api/state reports it.
+        let runtime = state.runtime.read().unwrap();
+        assert_eq!(runtime.model, "mistral-medium-latest");
+        assert!(runtime.agent.is_some(), "agent rebuilt for the new model");
+        assert!(runtime.system_prompt.is_some());
+    }
+
+    #[tokio::test]
+    async fn api_model_swap_unknown_model_is_400() {
+        let state = test_state();
+        let response = api_model_swap(
+            State(state.clone()),
+            Json(ModelSwapBody {
+                model: "not-a-model".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], false);
+        assert!(
+            json["error"].as_str().unwrap().contains("not-a-model"),
+            "error names the rejected model: {json}"
+        );
+
+        // A refused swap leaves the runtime untouched.
+        assert_eq!(state.runtime.read().unwrap().model, "zai-glm-5-2");
     }
 }

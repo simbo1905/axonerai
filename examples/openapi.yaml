@@ -73,6 +73,43 @@ paths:
                     const: unknown tool
                 required: [ok, error]
 
+  /api/model:
+    post:
+      summary: Swap the agent model
+      description: >
+        Validates the model id against the jsonc config roster for the
+        CURRENT provider and swaps the model used for SUBSEQUENT agent runs
+        in this server process (the process serves one session; the swap
+        rebuilds the agent behind the shared runtime lock and is not
+        persisted — a restart returns to the configured/default model).
+        Responds with the updated state snapshot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelSwap"
+      responses:
+        "200":
+          description: Model swapped; updated snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StateSnapshot"
+        "400":
+          description: Unknown model for the current provider
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: false
+                  error:
+                    type: string
+                required: [ok, error]
+
   /api/sessions:
     get:
       summary: Session index
@@ -256,6 +293,14 @@ components:
           type: boolean
           description: true to enable, false to disable (suppress)
       required: [name, enabled]
+
+    ModelSwap:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model id from the current provider's config roster
+      required: [model]
 
     SessionInfo:
       type: object

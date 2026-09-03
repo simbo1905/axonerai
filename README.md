@@ -196,10 +196,14 @@ The web demo requires:
 ## Slash commands, side panel & devtools console
 
 The right-hand TUI-style side panel renders status trees (Context, MCP, LSP,
-Todo, Slash, Built-ins) plus a per-session tool toggle list. Commands are typed
-in the composer:
+Todo, Models, Slash, Built-ins) plus a per-session tool toggle list. Its
+status-bar footer shows `Chat · <model> <provider> · think off` plus the
+context use `<used>K (<percent>%)` over the model's context window. Commands
+are typed in the composer:
 
-- `/model` — show the active provider/model.
+- `/models` — open the Models tree (models for the current provider) and
+  switch: selecting a row POSTs `/api/model` to swap the model used for
+  subsequent agent runs.
 - `/built-ins` — open the Built-ins tree and toggle tools per session.
 - `/verbose` — toggle verbose output rendering (tool-call trace lines).
 - `/rename <title>` — rename the session.
@@ -210,7 +214,7 @@ A `/` typed as the FIRST character is a command; a slash anywhere else is
 ordinary chat. Slash commands run entirely in the browser: the prompt is never
 sent to the model. Command results go to the devtools console bus
 (`console.log`-style lines); the panel Slash tree keeps only the invocation
-echo (e.g. `/model`).
+echo (e.g. `/models`).
 
 Panel notes: **Context** shows real provider-message tokens — a bytes/4
 estimate over the per-session agent-state messages (system prompt included
@@ -235,6 +239,9 @@ Control-plane state is REST; the chat data plane is the WebSocket:
 
 - `GET /api/state` — provider/model/session/repo/context/tools/MCP snapshot.
 - `POST /api/tools` — `{"name": "<tool>", "enabled": bool}` toggle.
+- `POST /api/model` — `{"model": "<id>"}` swap the model used for subsequent
+  agent runs (validated against the config roster; responds with the updated
+  state snapshot).
 - `GET /api/sessions` — index of all rollouts, newest first.
 - `GET /api/session/{uuid}?after=<ms>` — chunked line-format catch-up stream.
 - `GET /openapi.yaml` — OpenAPI 3.1 document for the REST API.

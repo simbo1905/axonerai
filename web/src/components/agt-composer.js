@@ -234,7 +234,7 @@ export class AgtComposer extends HTMLElement {
       parsed.kind === "command" && parsed.name === name && !parsed.error
         ? parsed.args
         : "";
-    // A menu selection RESOLVES a typo'd prefix ("/m" → "/model"): dispatch
+    // A menu selection RESOLVES a typo'd prefix ("/m" → "/models"): dispatch
     // the canonical command text so the runner re-parses the command that was
     // actually selected, never the raw prefix that failed to parse.
     const resolved = args ? `/${name} ${args}` : `/${name}`;

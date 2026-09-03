@@ -1,8 +1,12 @@
 // @ts-check
+import { footerSegments, formatFooter } from "../footer.mjs";
+import { contextWindowFor } from "../models.mjs";
 
 /**
  * Right-hand TUI-style side panel: session title, Context / MCP / LSP / Todo /
- * Slash / Built-ins text trees with ▾/▸ triangles, and a `path:branch` footer.
+ * Models / Slash / Built-ins text trees with ▾/▸ triangles, and a status-bar
+ * footer (`Chat · <model> <provider> · think off` on the left, context use
+ * `<used>K (<percent>%)` on the right).
  * Monospace terminal styling lives entirely in this component's shadow DOM —
  * the chat keeps its existing fonts.
  *
@@ -34,6 +38,15 @@
  * @property {Array<{ name: string, status: string }>} mcp
  * @property {unknown[]} lsp
  * @property {unknown} todo
+ */
+
+/**
+ * One selectable row of the Models tree (web/src/models.mjs roster).
+ *
+ * @typedef {object} ModelRow
+ * @property {string} id model id sent to POST /api/model
+ * @property {number | null} contextWindow context window in tokens (null
+ *   when unknown — the K suffix is then omitted)
  */
 
 /**
@@ -191,10 +204,20 @@ export class AgtPanel extends HTMLElement {
       .agt-p-tool input:focus-visible ~ .agt-p-mark {
         outline: 1px solid #3b82f6;
       }
-      .agt-p-footer {
-        border-top: 1px solid #1e293b; padding: 8px 10px;
-        color: #64748b; word-break: break-all;
+      .agt-p-model {
+        display: block; width: 100%; background: none; border: none;
+        padding: 0; color: #a7f3d0; font: inherit; cursor: pointer;
+        text-align: left;
       }
+      .agt-p-model:hover { color: #bae6fd; }
+      .agt-p-footer {
+        display: flex; align-items: baseline; justify-content: space-between;
+        gap: 8px; border-top: 1px solid #1e293b; padding: 8px 10px;
+        color: #a7f3d0; white-space: nowrap; overflow: hidden;
+      }
+      .agt-p-footer-left { overflow: hidden; text-overflow: ellipsis; }
+      .agt-p-footer .agt-p-dim { color: #64748b; }
+      .agt-p-footer-right { flex: none; color: #64748b; }
     `;
 
     const panel = document.createElement("div");
@@ -215,7 +238,7 @@ export class AgtPanel extends HTMLElement {
 
     this.#bodyEl = document.createElement("div");
     this.#bodyEl.className = "agt-p-body";
-    for (const name of ["Context", "MCP", "LSP", "Todo", "Slash", "Built-ins"]) {
+    for (const name of ["Context", "MCP", "LSP", "Todo", "Models", "Slash", "Built-ins"]) {
       const section = createSection(name);
       this.#sections.set(name, section);
       this.#bodyEl.append(section.root);
@@ -312,11 +335,38 @@ export class AgtPanel extends HTMLElement {
     this.#tools = Array.isArray(snapshot.tools) ? [...snapshot.tools] : [];
     this.#renderTools();
 
-    if (this.#footerEl) {
-      const path = snapshot.repo?.path ?? "(unknown)";
-      const branch = snapshot.repo?.branch ?? "(unknown)";
-      this.#footerEl.textContent = `${path}:${branch}`;
-    }
+    if (this.#footerEl) this.#renderFooter(snapshot);
+  }
+
+  /**
+   * Render the status-bar footer: left = `Chat · <model> <provider> · think
+   * off` (provider/think spans fainter than the model), right = context use
+   * `<used>K (<percent>%)` over the model's context window (percent omitted
+   * for models without a known window — see web/src/models.mjs).
+   *
+   * @param {Readonly<StateSnapshot>} snapshot
+   */
+  #renderFooter(snapshot) {
+    const footer = this.#footerEl;
+    if (!footer) return;
+    const segments = footerSegments(snapshot);
+    const contextWindow = contextWindowFor(segments.model);
+    const { right } = formatFooter(snapshot, contextWindow);
+    const left = document.createElement("span");
+    left.className = "agt-p-footer-left";
+    const head = document.createElement("span");
+    head.textContent = `${segments.mode} · ${segments.model} `;
+    const provider = document.createElement("span");
+    provider.className = "agt-p-dim";
+    provider.textContent = segments.provider;
+    const think = document.createElement("span");
+    think.className = "agt-p-dim";
+    think.textContent = ` · think ${segments.think}`;
+    left.append(head, provider, think);
+    const rightEl = document.createElement("span");
+    rightEl.className = "agt-p-footer-right";
+    rightEl.textContent = right;
+    footer.replaceChildren(left, rightEl);
   }
 
   /**
@@ -336,7 +386,7 @@ export class AgtPanel extends HTMLElement {
    * command line that was run. Collapses every other tree, expands Slash,
    * appends the echoed command line to the scrollable Slash log.
    *
-   * @param {string} rawText the command line that was run (e.g. "/model")
+   * @param {string} rawText the command line that was run (e.g. "/models")
    */
   echoSlash(rawText) {
     if (!this.#rendered) return;
@@ -373,6 +423,50 @@ export class AgtPanel extends HTMLElement {
   /** Expand the Built-ins tree (e.g. after running /built-ins). */
   openBuiltins() {
     this.#sections.get("Built-ins")?.setCollapsed(false);
+  }
+
+  /**
+   * Render the Models tree (slash /models): one row per model for the
+   * CURRENT provider — `model id (K)` with the context window when known.
+   * Collapses every other tree, expands Models (one tree expanded at a
+   * time). Clicking a row fires the bubbling `agt-select-model` CustomEvent
+   * with `{ model: "<id>" }` so agt-app can stay decoupled (it POSTs
+   * /api/model).
+   *
+   * @param {ModelRow[]} models
+   */
+  showModels(models) {
+    if (!this.#rendered) return;
+    for (const [name, section] of this.#sections) {
+      section.setCollapsed(name === "Models" ? false : true);
+    }
+    const section = this.#sections.get("Models");
+    if (!section) return;
+    if (!Array.isArray(models) || models.length === 0) {
+      this.#setLines(section, [{ text: "(none)", cls: "agt-p-dim" }]);
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const model of models) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "agt-p-model";
+      row.textContent =
+        typeof model.contextWindow === "number"
+          ? `${model.id} (${Math.round(model.contextWindow / 1000)}K)`
+          : model.id;
+      row.addEventListener("click", () => {
+        this.dispatchEvent(
+          new CustomEvent("agt-select-model", {
+            detail: { model: model.id },
+            bubbles: true,
+            composed: true,
+          }),
+        );
+      });
+      frag.append(row);
+    }
+    section.content.replaceChildren(frag);
   }
 
   /**
@@ -438,7 +532,7 @@ export class AgtPanel extends HTMLElement {
 
   #setUnavailable() {
     this.setSessionTitle("(unavailable)");
-    for (const name of ["Context", "MCP", "LSP", "Todo", "Built-ins"]) {
+    for (const name of ["Context", "MCP", "LSP", "Todo", "Models", "Built-ins"]) {
       const section = this.#sections.get(name);
       if (section) {
         this.#setLines(section, [{ text: "(unavailable)", cls: "agt-p-dim" }]);
