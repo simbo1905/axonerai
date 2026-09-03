@@ -38,6 +38,14 @@ pub trait Tool: Send + Sync {
         ToolSource::Builtin
     }
 
+    /// Whether the tool only reads state and never mutates anything outside
+    /// the agent scratch area. Defaults to `true`; write tools (currently
+    /// only `write_file`) override to `false`. The future `--tools-readonly`
+    /// flag indexes this to strip write tools from the registry.
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     async fn execute(&self, input: Value) -> Result<String>;
 }
 

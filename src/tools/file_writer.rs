@@ -120,6 +120,11 @@ impl Tool for WriteFile {
         })
     }
 
+    /// The one write tool: excluded from the future `--tools-readonly` index.
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, input: Value) -> Result<String> {
         let path_str = input["path"]
             .as_str()

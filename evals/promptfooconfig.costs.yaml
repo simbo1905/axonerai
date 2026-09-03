@@ -1,0 +1,300 @@
+# item43 — model-cost update workflow evals + the ModelsConfig builtin.
+#
+# Run from the repo root (two live axoner-web servers on item43's OWN ports
+# 9532/9533 — not the 9501-9507 eval matrix, NEVER 9090/9516; fresh sessions,
+# i.e. NO -c; kill everything you start):
+#
+#   make build-server
+#   make serve-up PROVIDER=mistral MODEL=zai-glm-5-2 PORT=9532
+#   make serve-up PROVIDER=mistral MODEL=mistral-medium-latest PORT=9533
+#   promptfoo eval -c evals/promptfooconfig.costs.yaml -j 1 --no-share
+#   make serve-down PROVIDER=all
+#
+# Conventions: same task.txt prompt template + agt-provider.mjs WS provider as
+# evals/promptfooconfig.fraud.yaml, maxConcurrency 1, deterministic asserts
+# only. Provider config `transcript: true` appends `\n[tools] <names>` (the
+# tool_call frames seen on the WS) to the output so asserts can require the
+# agent to have CALLED a tool, not merely said it did. Test-level
+# `providers:` label filters pin each test to exactly ONE server, so the
+# whole file is ≤5 model calls (prompts) total.
+#
+# Cases:
+#   a) Page-fetch behaviour (mistral--zai-glm-5-2, port 9532) — LIVE case:
+#      the agent gets the update-model-costs skill content inline plus the
+#      two opencode.ai page URLs and must really WebFetch them BEFORE doing
+#      anything else (requires TAVILY_API_KEY in the server env and
+#      opencode.ai reachable; if opencode.ai is down, document the failure —
+#      never fake it).
+#   b) Force-fed update (BOTH drivers, one test each) — fully self-contained:
+#      stale mistral-models.jsonc + a fabricated pricing-page extract (one
+#      price CHANGED, one model REMOVED, one model ADDED) pasted into the
+#      prompt; NO page fetching (asserted). Deterministic asserts on the
+#      reply: new price present, removed id gone from config entries, added
+#      id present with its price, `context_window` shape preserved.
+#   c) ModelsConfig discovery (BOTH drivers) — "list the current model
+#      costs you know about" must call the read-only ModelsConfig builtin
+#      (asserted on the WS transcript).
+description: item43 model-costs evals (skill page-fetch workflow, force-fed update, ModelsConfig builtin)
+
+prompts:
+  # Paths are resolved relative to this config file's directory.
+  - file://task.txt
+
+providers:
+  - id: file://agt-provider.mjs
+    config:
+      port: 9532
+      label: mistral--zai-glm-5-2
+      transcript: true
+  - id: file://agt-provider.mjs
+    config:
+      port: 9533
+      label: mistral--mistral-medium-latest
+      transcript: true
+
+maxConcurrency: 1
+
+defaultTest:
+  options: {}
+
+tests:
+  # ---------------------------------------------------------------- case c
+  # ModelsConfig discovery: the agent must CALL the read-only builtin.
+  # 1 model call per driver (2 total). Runs FIRST: the servers own one
+  # persistent agent session, so the discovery probes must run before the
+  # skill/force-fed prompts fill the session with pricing content.
+  - description: >
+      case c (mistral-medium-latest): "list the current model costs you know
+      about" must call the ModelsConfig builtin on the wire
+    providers:
+      - mistral--mistral-medium-latest
+    vars:
+      task: List the current model costs you know about.
+    assert:
+      - type: javascript
+        value: /\[tools\][^\n]*\bModelsConfig\b/.test(output)
+
+  - description: >
+      case c (zai-glm-5-2): "list the current model costs you know about"
+      must call the ModelsConfig builtin on the wire
+    providers:
+      - mistral--zai-glm-5-2
+    vars:
+      task: List the current model costs you know about.
+    assert:
+      - type: javascript
+        value: /\[tools\][^\n]*\bModelsConfig\b/.test(output)
+
+
+  # ---------------------------------------------------------------- case b
+  # Force-fed, self-contained: stale config + fabricated page extract. No
+  # page fetching (asserted). 1 model call per driver.
+  - description: >
+      case b (force-fed, mistral-medium-latest): price CHANGED, model REMOVED,
+      model ADDED, context_window preserved — no fetching
+    providers:
+      - mistral--mistral-medium-latest
+    vars:
+      task: >-
+        You maintain per-provider model config files. Do NOT fetch anything;
+        work only from the material below.
+
+
+        CURRENT .axonerai/models/mistral-models.jsonc (STALE):
+
+
+        ```jsonc
+        {
+          "provider": "mistral",
+          "updated": "2026-08-01",
+          "models": [
+            {
+              "id": "mistral-large-latest",
+              "display": "Mistral Large",
+              "context_window": 131072,
+              "costs": {"input_per_mtok": "$2.00", "output_per_mtok": "$6.00"}
+            },
+            {
+              "id": "mistral-small-latest",
+              "display": "Mistral Small",
+              "context_window": 32768,
+              "costs": {"input_per_mtok": "$0.20", "output_per_mtok": "$0.60"}
+            }
+          ]
+        }
+        ```
+
+
+        FABRICATED pricing-page extract (pretend this was just WebFetched
+        from https://mistral.ai/pricing today):
+
+
+        - mistral-large-latest: input $2.50 / output $7.50 per MTok (price
+          CHANGED from the stale $2.00/$6.00)
+        - mistral-small-latest: no longer listed on the page (model REMOVED —
+          delete its entry entirely)
+        - mistral-medium-latest: input $0.40 / output $2.00 per MTok, context
+          window 262144 tokens (model ADDED — new entry)
+
+
+        Output the updated `.axonerai/models/mistral-models.jsonc` content
+        using the exact cost strings from the extract including the $ sign.
+        Keep the JTD shape: provider, updated (bump the date), models[] with
+        id/display/context_window/costs. Keep context_window values unchanged
+        for models that stay. Remove models that no longer appear on the
+        page. Reply with ONLY the updated JSONC content, no commentary.
+    assert:
+      - type: contains
+        value: "$2.50"
+      - type: contains
+        value: "$0.40"
+      - type: contains
+        value: "context_window"
+      - type: javascript
+        value: |
+          const ids = [...output.matchAll(/"id"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+          return ids.includes("mistral-large-latest") && ids.includes("mistral-medium-latest") && !ids.includes("mistral-small-latest");
+      - type: javascript
+        value: '!/\[tools\][^\n]*\b(WebFetch|WebSearch|tavily_search|tavily_extract)\b/.test(output)'
+
+  - description: >
+      case b (force-fed, zai-glm-5-2): same self-contained update as a
+      second provider sample
+    providers:
+      - mistral--zai-glm-5-2
+    vars:
+      task: >-
+        You maintain per-provider model config files. Do NOT fetch anything;
+        work only from the material below.
+
+
+        CURRENT .axonerai/models/mistral-models.jsonc (STALE):
+
+
+        ```jsonc
+        {
+          "provider": "mistral",
+          "updated": "2026-08-01",
+          "models": [
+            {
+              "id": "mistral-large-latest",
+              "display": "Mistral Large",
+              "context_window": 131072,
+              "costs": {"input_per_mtok": "$2.00", "output_per_mtok": "$6.00"}
+            },
+            {
+              "id": "mistral-small-latest",
+              "display": "Mistral Small",
+              "context_window": 32768,
+              "costs": {"input_per_mtok": "$0.20", "output_per_mtok": "$0.60"}
+            }
+          ]
+        }
+        ```
+
+
+        FABRICATED pricing-page extract (pretend this was just WebFetched
+        from https://mistral.ai/pricing today):
+
+
+        - mistral-large-latest: input $2.50 / output $7.50 per MTok (price
+          CHANGED from the stale $2.00/$6.00)
+        - mistral-small-latest: no longer listed on the page (model REMOVED —
+          delete its entry entirely)
+        - mistral-medium-latest: input $0.40 / output $2.00 per MTok, context
+          window 262144 tokens (model ADDED — new entry)
+
+
+        Output the updated `.axonerai/models/mistral-models.jsonc` content
+        using the exact cost strings from the extract including the $ sign.
+        Keep the JTD shape: provider, updated (bump the date), models[] with
+        id/display/context_window/costs. Keep context_window values unchanged
+        for models that stay. Remove models that no longer appear on the
+        page. Reply with ONLY the updated JSONC content, no commentary.
+    assert:
+      - type: contains
+        value: "$2.50"
+      - type: contains
+        value: "$0.40"
+      - type: contains
+        value: "context_window"
+      - type: javascript
+        value: |
+          const ids = [...output.matchAll(/"id"\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+          return ids.includes("mistral-large-latest") && ids.includes("mistral-medium-latest") && !ids.includes("mistral-small-latest");
+      - type: javascript
+        value: '!/\[tools\][^\n]*\b(WebFetch|WebSearch|tavily_search|tavily_extract)\b/.test(output)'
+
+  # ---------------------------------------------------------------- case a
+  # LIVE: real WebFetch of the two opencode.ai pages from the skill, before
+  # anything else. 1 model call. Runs LAST in file order: the servers own
+  # one persistent agent session, so this (the only test that fetches live
+  # pages) must not pollute the session for cases b/c.
+  - description: >
+      case a (LIVE, zai-glm-5-2): skill says fetch the pricing pages first —
+      the agent must really call WebFetch/tavily_extract on both opencode.ai URLs
+    providers:
+      - mistral--zai-glm-5-2
+    vars:
+      task: >-
+        You are applying the update-model-costs skill. Its content:
+
+
+        ---
+
+        # Update axonerai model costs
+
+
+        ## Concept
+
+
+        Model-specific data (context windows, token costs, offers) lives in
+        per-provider JSONC files — NOT in the main app config or the GUI:
+
+
+        - Local: `.axonerai/models/<provider>-models.jsonc` (repo, shareable)
+        - User fallback: `~/.axonerai/models/<provider>-models.jsonc`
+        - LOCAL MASKS USER when both exist.
+
+
+        Each file is JTD-validated against `schemas/provider_models.jdt.json`
+        (`additionalProperties: false`) before use.
+
+
+        ## Where the costs live (pages DO move)
+
+
+        Prices change constantly and models appear/disappear. The `updated`
+        date field records freshness. Verify these URLs live today (re-locate
+        with WebSearch/WebFetch whenever one 404s — do not trust a stale URL):
+
+
+        - OpenCode Zen models page: https://opencode.ai/docs/zen
+        - OpenCode Go models page: https://opencode.ai/docs/go
+
+
+        ## Workflow
+
+
+        1. WebFetch the pricing/model pages above for current per-MTok costs
+           BEFORE changing anything.
+        2. Prices added/removed/changed follow the pages: a model gone from
+           the page gets its costs removed; a new model gets a new entry with
+           costs from the page.
+
+        ---
+
+
+        Update the opencode-zen and opencode-go model costs. The two opencode
+        pages are https://opencode.ai/docs/zen and https://opencode.ai/docs/go.
+        Follow the skill: fetch BOTH pages first with the WebFetch tool —
+        each page EXACTLY ONCE, no re-fetching — then immediately write your
+        final answer: the updated .axonerai/models/opencode-zen-models.jsonc
+        and opencode-go-models.jsonc content, and the exact URLs you fetched.
+    assert:
+      - type: javascript
+        value: /\[tools\][^\n]*\b(WebFetch|tavily_extract)\b/.test(output)
+      - type: regex
+        value: "https://opencode\\.ai/docs/zen"
+      - type: regex
+        value: "https://opencode\\.ai/docs/go"

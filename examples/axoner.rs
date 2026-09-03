@@ -1,6 +1,6 @@
 use axonerai::provider::Provider;
 use axonerai::tools::{
-    Calculator, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
+    Calculator, ModelsConfig, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
 use axonerai::{
     Agent, AppConfig, GroqProvider, MistralProvider, OpenAIProvider, OpenCodeProvider, ToolRegistry,
@@ -91,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let mut tools = ToolRegistry::new();
     tools.register(Box::new(Calculator));
     tools.register(Box::new(WriteFile::default()));
+    tools.register(Box::new(ModelsConfig::new()));
     // Only register the Tavily-backed web tools when an API key is available.
     if env::var("TAVILY_API_KEY").is_ok() {
         tools.register(Box::new(WebSearch::new()));

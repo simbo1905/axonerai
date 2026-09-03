@@ -27,5 +27,5 @@ pub use opencode::OpenCodeProvider;
 pub use session::Session;
 pub use settings::Settings;
 pub use tool::{Tool, ToolRegistry};
-pub use tools::{Calculator, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch};
+pub use tools::{Calculator, ModelsConfig, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch};
 pub use wire::{ClientMsg, ServerMsg};

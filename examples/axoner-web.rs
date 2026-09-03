@@ -23,7 +23,7 @@ use axonerai::session::context_tokens_on_disk;
 use axonerai::settings::Settings;
 use axonerai::tool::{ToolInfo, ToolRegistry};
 use axonerai::tools::{
-    Calculator, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
+    Calculator, ModelsConfig, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
 use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
 use axonerai::{
@@ -1309,6 +1309,7 @@ fn build_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(Calculator));
     registry.register(Box::new(WriteFile::default()));
+    registry.register(Box::new(ModelsConfig::new()));
 
     // Only register the Tavily-backed web tools when an API key is available.
     if std::env::var("TAVILY_API_KEY").is_ok() {
