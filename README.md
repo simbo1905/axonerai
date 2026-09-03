@@ -1,6 +1,7 @@
 # AxonerAI
 
-A type-safe, high-performance agentic AI framework in Rust.
+A type-safe, high-performance agentic AI framework in Rust. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design rationale and test strategy.
 
 **Why AxonerAI?**
 - 🦀 **Type-safe** - Catch errors at compile time, not runtime
