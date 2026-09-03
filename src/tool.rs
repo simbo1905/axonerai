@@ -247,13 +247,16 @@ mod tests {
 
     /// The real registry shape (same build as examples/axoner.rs and
     /// examples/axoner-web.rs): with the filter `write_file` is absent and
-    /// every read tool (calculator / ModelsConfig / WebSearch / WebFetch /
-    /// tavily facade) is present; without it all seven are present.
+    /// every read tool (calculator / ReadFile / ListDir / ModelsConfig /
+    /// WebSearch / WebFetch / tavily facade) is present; without it all nine
+    /// are present.
     #[test]
     fn into_read_only_filters_the_real_registry() {
         let mut registry = ToolRegistry::new();
         registry.register(Box::new(crate::tools::Calculator));
         registry.register(Box::new(crate::tools::WriteFile::default()));
+        registry.register(Box::new(crate::tools::ReadFile::default()));
+        registry.register(Box::new(crate::tools::ListDir::default()));
         registry.register(Box::new(crate::tools::ModelsConfig::new()));
         registry.register(Box::new(crate::tools::WebSearch::new()));
         registry.register(Box::new(crate::tools::WebFetch::new()));
@@ -261,15 +264,17 @@ mod tests {
         registry.register(Box::new(crate::tools::TavilyMcpExtract::new()));
 
         let all_names: Vec<String> = registry.list_tools();
-        assert_eq!(all_names.len(), 7, "precondition: all registered");
+        assert_eq!(all_names.len(), 9, "precondition: all registered");
         assert!(all_names.contains(&"write_file".to_string()));
 
         let read_only = registry.into_read_only();
         let names: Vec<String> = read_only.list_tools();
-        assert_eq!(names.len(), 6, "only write_file dropped");
+        assert_eq!(names.len(), 8, "only write_file dropped");
         assert!(!names.contains(&"write_file".to_string()));
         for expected in [
             "calculator",
+            "ReadFile",
+            "ListDir",
             "ModelsConfig",
             "WebSearch",
             "WebFetch",
@@ -284,7 +289,7 @@ mod tests {
 
         // The LLM-facing tool list reflects the same filtered set.
         let for_llm = read_only.get_all_for_llm();
-        assert_eq!(for_llm.len(), 6);
+        assert_eq!(for_llm.len(), 8);
         assert!(!for_llm.iter().any(|t| t.name == "write_file"));
     }
 

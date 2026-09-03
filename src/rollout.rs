@@ -387,14 +387,17 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    /// Unique gitignored scratch dir per test; cleaned up on drop so panics
-    /// don't leak dirs.
+    /// Unique scratch dir per test; cleaned up on drop so panics don't leak
+    /// dirs. ABSOLUTE (`std::env::temp_dir`), not relative `.tmp/`: lib
+    /// tests share one process, and any test that mutates the process CWD
+    /// (file_writer's jailed-Default test) would otherwise make these
+    /// relative paths resolve under the wrong root mid-run.
     struct TestDir(PathBuf);
 
     impl TestDir {
         fn new(label: &str) -> TestDir {
-            let dir = PathBuf::from(format!(
-                ".tmp/rollout-test-{label}-{}",
+            let dir = std::env::temp_dir().join(format!(
+                "axonerai-rollout-test-{label}-{}",
                 uuid::Uuid::new_v4()
             ));
             fs::create_dir_all(&dir).unwrap();
