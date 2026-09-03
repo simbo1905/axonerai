@@ -124,6 +124,12 @@ fn build_registry(tools_readonly: bool) -> ToolRegistry {
         tools.register(Box::new(TavilyMcpSearch::new()));
         tools.register(Box::new(TavilyMcpExtract::new()));
     }
+    // Only register the Context7 MCP facade tools when an API key is available.
+    if axonerai::tools::context7_mcp::is_configured() {
+        // Fake Context7 MCP facade: MCP-style tools with no MCP host process.
+        tools.register(Box::new(axonerai::Context7McpResolveLibraryId::new()));
+        tools.register(Box::new(axonerai::Context7McpGetLibraryDocs::new()));
+    }
     if tools_readonly {
         tools = tools.into_read_only();
     }

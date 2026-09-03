@@ -25,6 +25,16 @@ pub fn unset_key() {
     unsafe { std::env::remove_var("TAVILY_API_KEY") };
 }
 
+pub fn set_context7_key(value: &str) {
+    // SAFETY: callers hold env_guard(), serialising all env mutations in tests.
+    unsafe { std::env::set_var("CONTEXT7_API_KEY", value) };
+}
+
+pub fn unset_context7_key() {
+    // SAFETY: callers hold env_guard(), serialising all env mutations in tests.
+    unsafe { std::env::remove_var("CONTEXT7_API_KEY") };
+}
+
 pub struct CapturedRequest {
     pub path: String,
     pub authorization: Option<String>,

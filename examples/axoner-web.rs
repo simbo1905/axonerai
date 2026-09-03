@@ -23,8 +23,8 @@ use axonerai::session::context_tokens_on_disk;
 use axonerai::settings::Settings;
 use axonerai::tool::{ToolInfo, ToolRegistry};
 use axonerai::tools::{
-    Calculator, ListDir, ModelsConfig, ReadFile, TavilyMcpExtract, TavilyMcpSearch, WebFetch,
-    WebSearch, WriteFile,
+    Calculator, Context7McpGetLibraryDocs, Context7McpResolveLibraryId, ListDir, ModelsConfig,
+    ReadFile, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
 use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
 use axonerai::{
@@ -693,17 +693,23 @@ fn state_snapshot(state: &AppState) -> StateSnapshot {
     }
 }
 
-/// Registered (fake) MCP servers: `tavily` is "connected" iff its API key is
-/// present; there is no MCP host process.
+/// Registered (fake) MCP servers: `tavily` / `context7` are "connected" iff
+/// their API keys are present; there is no MCP host process.
 fn mcp_servers() -> Vec<McpServerInfo> {
+    let mut servers = Vec::new();
     if std::env::var("TAVILY_API_KEY").is_ok() {
-        vec![McpServerInfo {
+        servers.push(McpServerInfo {
             name: "tavily".to_string(),
             status: "connected".to_string(),
-        }]
-    } else {
-        vec![]
+        });
     }
+    if axonerai::tools::context7_mcp::is_configured() {
+        servers.push(McpServerInfo {
+            name: "context7".to_string(),
+            status: "connected".to_string(),
+        });
+    }
+    servers
 }
 
 /// Current git branch, parsed straight from `.git/HEAD` — NO subprocess.
@@ -1321,6 +1327,13 @@ fn build_registry() -> ToolRegistry {
         // Fake Tavily MCP facade: MCP-style tools with no MCP host process.
         registry.register(Box::new(TavilyMcpSearch::new()));
         registry.register(Box::new(TavilyMcpExtract::new()));
+    }
+
+    // Only register the Context7 MCP facade tools when an API key is available.
+    if axonerai::tools::context7_mcp::is_configured() {
+        // Fake Context7 MCP facade: MCP-style tools with no MCP host process.
+        registry.register(Box::new(Context7McpResolveLibraryId::new()));
+        registry.register(Box::new(Context7McpGetLibraryDocs::new()));
     }
 
     // Seed per-tool suppression from the persisted settings so a restart

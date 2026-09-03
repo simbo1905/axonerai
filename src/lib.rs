@@ -30,7 +30,7 @@ pub use session::Session;
 pub use settings::Settings;
 pub use tool::{Tool, ToolRegistry};
 pub use tools::{
-    Calculator, ListDir, ModelsConfig, ReadFile, TavilyMcpExtract, TavilyMcpSearch, WebFetch,
-    WebSearch,
+    Calculator, Context7McpGetLibraryDocs, Context7McpResolveLibraryId, ListDir, ModelsConfig,
+    ReadFile, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch,
 };
 pub use wire::{ClientMsg, ServerMsg};
