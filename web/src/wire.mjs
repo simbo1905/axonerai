@@ -145,6 +145,22 @@ const validators = {
 };
 
 /**
+ * Replace the validator for a `_type`. Used by the WASM loader
+ * (`initWasmValidators`) to install the Rust/WASM-generated validators over
+ * the generated `.mjs` fallback once `/assets/validators.js` finishes
+ * initialising; both validator sets implement the identical schema contract
+ * (same drop/malformed semantics, same `{instancePath, schemaPath}` error
+ * shape), so the swap is invisible to `parseWireEvent` callers.
+ *
+ * @param {string} type a `_type` already present in the validator registry
+ * @param {(data: unknown) => {instancePath: string, schemaPath: string}[]} validate
+ * @returns {void}
+ */
+export function registerValidator(type, validate) {
+  validators[/** @type {keyof typeof validators} */ (type)] = validate;
+}
+
+/**
  * Validate, deep-freeze and return a wire event, or return `null` for a
  * frame that should be dropped:
  * - no `_type` (or not a non-null object) → silent drop (no console noise);

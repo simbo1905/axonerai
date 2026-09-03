@@ -9,6 +9,7 @@ import {
   initLineformat,
   parseWireLine,
 } from "/src/lineformat.mjs";
+import { initWasmValidators } from "/src/wasm-validators.mjs";
 import {
   appendEvents,
   frontierOf,
@@ -101,6 +102,14 @@ export class AgtApp extends HTMLElement {
   connectedCallback() {
     if (!this.#wired) {
       this.#wired = true;
+
+      // Swap the generated `.mjs` wire validators for the Rust/WASM ones
+      // (same schema contract, so the swap is invisible to callers). Until
+      // (and unless) the WASM glue loads, the `.mjs` fallback stays in
+      // place and `parseWireEvent` behaviour is unchanged.
+      initWasmValidators().catch((error) => {
+        console.error("[wire] WASM validators failed to load; using mjs validators", error);
+      });
 
       // Console tee bus (item32): capture this chat screen's console from
       // boot so log/info/warn/error also flow to the agt-console

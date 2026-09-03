@@ -5,7 +5,7 @@ OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat
+.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat wasm-validators
 
 # Compose prompts/generated/*.txt from prompts/base.txt + prompts/models/*.patch.
 # Must run before `cargo build`: src/prompt.rs embeds
@@ -65,6 +65,35 @@ wasm-pretty:
 wasm-lineformat:
 	cargo build --manifest-path wasm/lineformat/Cargo.toml --release --target wasm32-unknown-unknown
 	wasm-bindgen --target web wasm/lineformat/target/wasm32-unknown-unknown/release/lineformat.wasm --out-dir web/assets --out-name lineformat
+
+# Build the shared wire-event validators for the browser: jtd-codegen
+# --target rust over schemas/*.jdt.json into wasm/validators/src/generated/,
+# then a release wasm32 build plus wasm-bindgen glue. The generated
+# web/assets/validators.js and validators_bg.wasm are committed (zero-node
+# deploy). The wasm-bindgen-cli version must equal the wasm-bindgen crate
+# version pinned in wasm/validators/Cargo.toml (currently 0.2.127). The same
+# generated Rust is unit-tested as pure Rust first (cargo test in
+# wasm/validators) — see wasm/validators/src/tests.rs.
+GEN_RUST_DIR     := wasm/validators/src/generated
+RUST_VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(GEN_RUST_DIR)/%.rs,$(SCHEMAS))
+
+wasm-validators: $(RUST_VALIDATORS) $(GEN_RUST_DIR)/mod.rs
+	cargo test --manifest-path wasm/validators/Cargo.toml
+	cargo build --manifest-path wasm/validators/Cargo.toml --release --target wasm32-unknown-unknown
+	wasm-bindgen --target web wasm/validators/target/wasm32-unknown-unknown/release/validators.wasm --out-dir web/assets --out-name validators
+
+$(GEN_RUST_DIR)/%.rs: $(SCHEMA_DIR)/%.jdt.json
+	@mkdir -p $(GEN_RUST_DIR)
+	$(JTD_CODEGEN) --target rust $< > $@
+
+# Barrel: one `pub mod` per generated Rust module (schema stems are already
+# valid snake_case Rust idents).
+$(GEN_RUST_DIR)/mod.rs: $(RUST_VALIDATORS)
+	@rm -f $@
+	@for f in $(RUST_VALIDATORS); do \
+	  stem=$$(basename "$$f" .rs); \
+	  echo "pub mod $$stem;" >> $@; \
+	done
 
 serve-up:
 	@tooling/serve.lua up $(PROVIDER) $(MODEL) $(PORT)
