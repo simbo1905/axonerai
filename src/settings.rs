@@ -30,6 +30,13 @@ pub struct Settings {
     /// local/user folder skills are unaffected.
     #[serde(default)]
     pub disabled_skills: Vec<String>,
+    /// item57: services deactivated by short name (`mistral`, `groq`,
+    /// `opencode-zen`, `opencode-go`). A disabled service is kept OFF even
+    /// when its API key is present (a shared key must not activate a
+    /// service nobody is subscribed to); it is dropped from /api/services
+    /// activation and refused by POST /api/model service swaps.
+    #[serde(default)]
+    pub disabled_services: Vec<String>,
 }
 
 impl Settings {
@@ -110,6 +117,7 @@ mod tests {
             mcp_toggle_persist: true,
             disabled_mcp_servers: vec!["tavily".to_string()],
             disabled_skills: vec!["deepresearch".to_string()],
+            disabled_services: vec!["groq".to_string()],
         };
         settings.save_to(&path).expect("save should succeed");
 
@@ -121,6 +129,7 @@ mod tests {
         assert!(loaded.mcp_toggle_persist);
         assert_eq!(loaded.disabled_mcp_servers, vec!["tavily".to_string()]);
         assert_eq!(loaded.disabled_skills, vec!["deepresearch".to_string()]);
+        assert_eq!(loaded.disabled_services, vec!["groq".to_string()]);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -135,6 +144,7 @@ mod tests {
         assert!(!loaded.mcp_toggle_persist, "opt-in flag defaults off");
         assert!(loaded.disabled_mcp_servers.is_empty());
         assert!(loaded.disabled_skills.is_empty());
+        assert!(loaded.disabled_services.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 

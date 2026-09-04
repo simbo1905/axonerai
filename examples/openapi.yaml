@@ -6,7 +6,7 @@ info:
     interactive agent traffic runs over the `/ws` WebSocket; these endpoints
     are the control plane the UI panel renders: state snapshot, tool
     on/off toggles, session index and rollout catch-up streams.
-  version: 0.1.1
+  version: 0.2.0
 
 servers:
   - url: http://127.0.0.1:8080
@@ -17,16 +17,18 @@ paths:
     get:
       summary: Control-plane state snapshot
       description: >
-        Snapshot of the running server: active provider/model, current
+        Snapshot of the running server: active service/model, current
         session, repo info, approximate context size, tool registry with
-        on/off state, and registered MCP servers. `mcp` lists each server
-        with facade tools registered (i.e. its API key is set) and its
-        current `enabled` toggle state (item48); `lsp` is a placeholder
-        (always empty) and `todo` is a placeholder (always null). Context
-        tokens are a bytes/4 estimate over the JSON serialization of the
-        session's provider messages (the per-session agent-state file,
-        system prompt included when loaded); WS protocol frames are
-        excluded entirely.
+        on/off state, and registered MCP servers. item57 renamed the
+        `provider` field to `service` (the services model — a service is
+        an endpoint + an API key; the field carries the service short
+        name). `mcp` lists each server with facade tools registered (i.e.
+        its API key is set) and its current `enabled` toggle state
+        (item48); `lsp` is a placeholder (always empty) and `todo` is a
+        placeholder (always null). Context tokens are a bytes/4 estimate
+        over the JSON serialization of the session's provider messages
+        (the per-session agent-state file, system prompt included when
+        loaded); WS protocol frames are excluded entirely.
       responses:
         "200":
           description: Current state
@@ -34,6 +36,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StateSnapshot"
+
+  /api/services:
+    get:
+      summary: Services registry
+      description: >
+        item57: one entry per known service (`mistral`, `groq`,
+        `opencode-zen`, `opencode-go`). A service = an endpoint + an API
+        key. `enabled` is false when the service is named in the settings
+        `disabled_services` list (someone with a shared key must not
+        activate a service nobody is subscribed to); `connected` is true
+        when its API key resolves (per-service env var, with the shared
+        OPENCODE_API_KEY fallback for zen/go); `models` is the service's
+        models-config roster (empty array when no config file). The list
+        is recomputed on every request (settings + key lookup re-read —
+        this IS the reload path). N services = enabled AND connected.
+      responses:
+        "200":
+          description: One entry per known service
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServiceEntry"
 
   /api/models:
     get:
@@ -175,15 +201,22 @@ paths:
 
   /api/model:
     post:
-      summary: Swap the agent model
+      summary: Swap the agent service and/or model
       description: >
-        Validates the model id against the jsonc config roster for the
-        CURRENT provider PLUS the per-provider models config list (item41:
-        any model id known to either config is accepted) and swaps the model
-        used for SUBSEQUENT agent runs in this server process (the process
-        serves one session; the swap rebuilds the agent behind the shared
-        runtime lock and is not persisted — a restart returns to the
-        configured/default model). Responds with the updated state snapshot.
+        item57: `{"service": "<name>", "model": "<id>"}` hot-swaps BOTH the
+        service and the model for SUBSEQUENT agent runs — the provider is
+        rebuilt from the service (mistral/groq dedicated providers;
+        opencode-zen/opencode-go → OpenCodeProvider with the service's base
+        URL) and the agent rebuilt with it (same tool registry, same
+        per-session FileSessionManager, freshly composed system prompt)
+        behind the shared runtime lock. The swap is not persisted — a
+        restart returns to the configured/default service+model. Back-compat:
+        `{"model": "<id>"}` alone swaps within the CURRENT service.
+        Validation → 400: unknown service; service disabled in settings
+        (`disabled_services`); service with no API key; model not in the
+        TARGET service's roster (jsonc config roster OR the service's
+        per-provider models config, item41). Responds with the updated
+        state snapshot.
       requestBody:
         required: true
         content:
@@ -192,13 +225,15 @@ paths:
               $ref: "#/components/schemas/ModelSwap"
       responses:
         "200":
-          description: Model swapped; updated snapshot
+          description: Service/model swapped; updated snapshot
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/StateSnapshot"
         "400":
-          description: Unknown model for the current provider
+          description: >
+            Unknown service, disabled service, service with no API key, or
+            model unknown to the target service's roster
           content:
             application/json:
               schema:
@@ -233,7 +268,7 @@ paths:
         (a session_meta line is written as its first event), rebuilds the
         agent against the new per-session agent-state dir, and swaps both
         into the shared session lock — all WITHOUT a server restart.
-        Provider/model and the tool registry (suppression state included)
+        Service/model and the tool registry (suppression state included)
         are untouched. Responds with the updated state snapshot; repeat
         eval runs call this between runs instead of restarting the server.
         The reset itself is not persisted — a restart follows the ordinary
@@ -329,9 +364,12 @@ components:
     StateSnapshot:
       type: object
       properties:
-        provider:
+        service:
           type: string
-          description: Active provider name (e.g. "mistral")
+          description: >
+            Active service short name (item57; e.g. "mistral",
+            "opencode-zen"). Renamed from `provider` — the old field is
+            removed, not aliased.
         model:
           type: string
           description: Active model id (e.g. "zai-glm-5-2")
@@ -391,7 +429,7 @@ components:
         todo:
           description: Placeholder — always null
       required:
-        - provider
+        - service
         - model
         - session
         - repo
@@ -456,10 +494,64 @@ components:
     ModelSwap:
       type: object
       properties:
+        service:
+          type: string
+          description: >
+            Target service short name (item57). Omit to swap within the
+            CURRENT service (back-compat). Must be a known service that is
+            enabled in settings and has its API key present.
         model:
           type: string
-          description: Model id from the current provider's config roster or models config
+          description: >
+            Model id from the TARGET service's config roster or models
+            config
       required: [model]
+
+    ServiceEntry:
+      type: object
+      description: One known service's registry entry (item57)
+      properties:
+        service:
+          type: string
+          description: Service short name ("mistral", "groq", "opencode-zen", "opencode-go")
+        enabled:
+          type: boolean
+          description: false when named in the settings `disabled_services` list
+        connected:
+          type: boolean
+          description: >
+            API key resolvable (per-service env var, with the shared
+            OPENCODE_API_KEY fallback for opencode-zen/opencode-go)
+        models:
+          type: array
+          description: The service's models-config roster; empty when no config file
+          items:
+            $ref: "#/components/schemas/ModelEntry"
+      required: [service, enabled, connected, models]
+
+    ModelEntry:
+      type: object
+      description: One model roster row (item41 JTD schema provider_models.jdt.json)
+      properties:
+        id:
+          type: string
+        display:
+          type: string
+        context_window:
+          type: integer
+          minimum: 0
+        costs:
+          type: [object, "null"]
+          properties:
+            input_per_mtok:
+              type: string
+            output_per_mtok:
+              type: string
+          additionalProperties: false
+        offer:
+          type: string
+          description: Freeform offer text (e.g. "2x usage")
+      required: [id, display, context_window]
 
     ModelsConfig:
       type: object
@@ -474,27 +566,7 @@ components:
         models:
           type: array
           items:
-            type: object
-            properties:
-              id:
-                type: string
-              display:
-                type: string
-              context_window:
-                type: integer
-                minimum: 0
-              costs:
-                type: [object, "null"]
-                properties:
-                  input_per_mtok:
-                    type: string
-                  output_per_mtok:
-                    type: string
-                additionalProperties: false
-              offer:
-                type: string
-                description: Freeform offer text (e.g. "2x usage")
-            required: [id, display, context_window]
+            $ref: "#/components/schemas/ModelEntry"
       required: [provider, source, models]
 
     SkillEntry:

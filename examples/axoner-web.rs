@@ -27,10 +27,7 @@ use axonerai::tools::{
     ReadFile, ReadSkill, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
 use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
-use axonerai::{
-    Agent, AppConfig, FileSessionManager, GroqProvider, MistralProvider, OpenAIProvider,
-    OpenCodeProvider,
-};
+use axonerai::{Agent, AppConfig, FileSessionManager};
 
 /// Max characters for large string fields on WS egress to the browser. The
 /// rollout always stores FULL text; abridge is applied only when serving.
@@ -107,8 +104,10 @@ struct SessionHandle {
 /// Swappable agent runtime shared behind a lock so a /api/model swap is
 /// visible to every handler clone and to every subsequent WS prompt run
 /// (AppState is cloned per request, so the swappable state must live behind
-/// interior mutability).
+/// interior mutability). item57: the SERVICE is swapped alongside the model
+/// (the provider is rebuilt from the service on every swap).
 struct Runtime {
+    service: String,
     model: String,
     agent: Option<Arc<Agent>>,
     system_prompt: Option<String>,
@@ -167,20 +166,11 @@ impl ModelsConfigState {
     fn context_window(&self, model_id: &str) -> Option<u32> {
         self.get().and_then(|l| l.context_window(model_id))
     }
-
-    /// Does the models config know this model id? (Unknown provider-config
-    /// ids are accepted for /api/model swaps — config ADDS to the roster.)
-    fn knows_model(&self, model_id: &str) -> bool {
-        self.get()
-            .map(|l| l.find(model_id).is_some())
-            .unwrap_or(false)
-    }
 }
 
 #[derive(Clone)]
 struct AppState {
     web_root: PathBuf,
-    provider: String,
     /// jsonc config (roster validation for /api/model and agent rebuilds).
     config: Arc<AppConfig>,
     /// Per-provider models config (item41): context windows + costs + offers,
@@ -204,6 +194,10 @@ struct AppState {
     /// Settings file this server reads/writes (item54 test seam: tests point
     /// it at a temp file; production uses `.axonerai/settings.jsonc`).
     settings_path: PathBuf,
+    /// item57 test seam: the API-key lookup used for service resolution
+    /// (production reads the process env, seeded from .env; tests inject a
+    /// map so resolution is deterministic without env mutation).
+    key_lookup: Arc<dyn Fn(&str) -> Option<String> + Send + Sync>,
 }
 
 impl AppState {
@@ -239,6 +233,20 @@ impl AppState {
     /// order preserved on disk).
     fn append_json(&self, json: &str) {
         let _ = self.rollout().append_json(json);
+    }
+
+    /// item57: resolve the API key for a service — config `api_key`
+    /// override first, then the per-service env chain (zen/go fall back to
+    /// the shared OPENCODE_API_KEY) through the injectable key lookup.
+    fn resolve_service_key(&self, service: &str) -> Option<String> {
+        let config_override = self
+            .config
+            .providers
+            .get(service)
+            .and_then(|p| p.api_key.clone());
+        axonerai::services::resolve_key(service, config_override.as_deref(), |key| {
+            (self.key_lookup)(key)
+        })
     }
 }
 
@@ -448,6 +456,7 @@ async fn serve(
         &config,
         &provider_name,
         &model_id,
+        resolve_boot_service_key(&config, &provider_name),
         registry.clone(),
         &sessions_dir,
         &session_id,
@@ -458,13 +467,13 @@ async fn serve(
     let agent_state_dir = sessions_dir.join("agent-state");
     let models_cfg = Arc::new(ModelsConfigState::load(&provider_name));
     let runtime = Arc::new(RwLock::new(Runtime {
+        service: provider_name.clone(),
         model: model_id.clone(),
         agent,
         system_prompt: system_prompt.clone(),
     }));
     let state = AppState {
         web_root,
-        provider: provider_name.clone(),
         config: Arc::new(config),
         models_cfg,
         sessions_dir: sessions_dir.clone(),
@@ -477,6 +486,7 @@ async fn serve(
         registry,
         agent_state_dir,
         settings_path: PathBuf::from(axonerai::settings::DEFAULT_SETTINGS_PATH),
+        key_lookup: Arc::new(|key| std::env::var(key).ok()),
     };
 
     let assets_dir = state.web_root.join("assets");
@@ -510,11 +520,11 @@ async fn serve(
     println!("  Web root:   {}", state.web_root.display());
     if state.runtime.read().unwrap().agent.is_none() {
         println!(
-            "  Note: no provider configured (set MISTRAL_API_KEY / OPENCODE_API_KEY / GROQ_API_KEY)"
+            "  Note: no service configured (set MISTRAL_API_KEY / GROQ_API_KEY / OPENCODE_API_KEY)"
         );
     }
     println!();
-    println!("  Provider:   {}", provider_name);
+    println!("  Service:    {}", provider_name);
     println!("  Model:      {}", model_id);
     println!("  Session:    {session_id}");
     println!();
@@ -605,6 +615,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/session/:uuid", get(api_session_catchup))
         .route("/api/session/:uuid/tail", get(api_session_tail))
         .route("/api/state", get(api_state))
+        .route("/api/services", get(api_services))
         .route("/api/models", get(api_models))
         .route("/api/skills", get(api_skills))
         .route("/api/tools", post(api_tools_toggle))
@@ -679,10 +690,12 @@ struct McpServerInfo {
 }
 
 /// The control-plane snapshot the UI panel renders. Field order matches the
-/// pinned API contract.
+/// pinned API contract. item57: `provider` was renamed to `service` (the
+/// services model; no lying aliases) — the server reports its SERVICE short
+/// name.
 #[derive(serde::Serialize)]
 struct StateSnapshot {
-    provider: String,
+    service: String,
     model: String,
     session: SessionSnapshot,
     repo: RepoSnapshot,
@@ -708,7 +721,7 @@ fn session_title(state: &AppState) -> String {
     state.rollout().title().unwrap_or_else(|_| session_id)
 }
 
-/// GET /api/state — provider/model/session/repo/context/tools/mcp snapshot.
+/// GET /api/state — service/model/session/repo/context/tools/mcp snapshot.
 /// Context tokens are the model's context estimate: bytes/4 (floor) over the
 /// JSON serialization of the session's provider messages (the per-session
 /// agent-state file, system prompt included when loaded). Protocol events
@@ -719,8 +732,9 @@ async fn api_state(State(state): State<AppState>) -> Response {
 }
 
 /// Build the control-plane snapshot the UI panel renders. Field order
-/// matches the pinned API contract. Model/system-prompt state is read from
-/// the shared [`Runtime`] so a /api/model swap is reflected immediately.
+/// matches the pinned API contract. Service/model/system-prompt state is
+/// read from the shared [`Runtime`] so a /api/model swap is reflected
+/// immediately.
 fn state_snapshot(state: &AppState) -> StateSnapshot {
     let runtime = state.runtime.read().unwrap();
     // Title resolution must match the sessions index: the last `session_rename`
@@ -728,7 +742,7 @@ fn state_snapshot(state: &AppState) -> StateSnapshot {
     let title = session_title(state);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     StateSnapshot {
-        provider: state.provider.clone(),
+        service: runtime.service.clone(),
         model: runtime.model.clone(),
         session: SessionSnapshot {
             id: state.session_id(),
@@ -837,7 +851,7 @@ async fn api_models(State(state): State<AppState>, Query(query): Query<ModelsQue
                 .collect(),
         },
         None => ModelsConfigResponse {
-            provider: state.provider.clone(),
+            provider: state.runtime.read().unwrap().service.clone(),
             source: None,
             models: vec![],
         },
@@ -848,6 +862,62 @@ async fn api_models(State(state): State<AppState>, Query(query): Query<ModelsQue
 #[derive(serde::Deserialize)]
 struct ModelsQuery {
     reload: Option<bool>,
+}
+
+// --- Services registry (GET /api/services) -----------------------------------
+
+/// One entry of the /api/services response (item57).
+#[derive(serde::Serialize)]
+struct ServiceEntry {
+    /// Service short name ("mistral", "groq", "opencode-zen", "opencode-go").
+    service: String,
+    /// Not named in the settings `disabled_services` list.
+    enabled: bool,
+    /// API key resolvable (config override or per-service env var, with the
+    /// shared OPENCODE_API_KEY fallback for zen/go).
+    connected: bool,
+    /// The service's models-config roster (item41 files); empty array when
+    /// no config file exists (missing-safe).
+    models: Vec<ModelsConfigEntry>,
+}
+
+/// GET /api/services — the item57 services registry: one entry per known
+/// service. Recomputed per request (settings + key lookup re-read — this IS
+/// the reload path). N services = enabled AND key present; the browser
+/// offers exactly those for activation.
+async fn api_services(State(state): State<AppState>) -> Response {
+    let disabled_services = state.load_settings().disabled_services;
+    let entries = axonerai::services::KNOWN_SERVICES
+        .iter()
+        .map(|service| {
+            let models = match models_config::load_from_dirs(
+                &state.models_cfg.local,
+                &state.models_cfg.user,
+                service,
+            ) {
+                Ok(Some(loaded)) => loaded
+                    .config
+                    .models
+                    .iter()
+                    .map(|m| ModelsConfigEntry {
+                        id: m.id.clone(),
+                        display: m.display.clone(),
+                        context_window: m.context_window,
+                        costs: m.costs.clone(),
+                        offer: m.offer.clone(),
+                    })
+                    .collect(),
+                _ => vec![],
+            };
+            ServiceEntry {
+                service: service.to_string(),
+                enabled: axonerai::services::is_enabled(service, &disabled_services),
+                connected: state.resolve_service_key(service).is_some(),
+                models,
+            }
+        })
+        .collect::<Vec<ServiceEntry>>();
+    Json(entries).into_response()
 }
 
 // --- Skills listing (GET /api/skills) ----------------------------------------
@@ -960,47 +1030,96 @@ async fn api_mcp_toggle(
     Json(serde_json::json!({"ok": true})).into_response()
 }
 
-// --- Model swap (POST /api/model) -------------------------------------------
+// --- Model/service swap (POST /api/model) ------------------------------------
 
 #[derive(serde::Deserialize)]
 struct ModelSwapBody {
+    /// item57: the TARGET service. Absent = swap within the CURRENT service
+    /// (back-compat with the pre-item57 `{"model": "..."}` body).
+    service: Option<String>,
     model: String,
 }
 
-/// POST /api/model `{"model": "<id>"}` — swap the model used for SUBSEQUENT
-/// agent runs, validating the id against the jsonc config roster for the
-/// CURRENT provider, plus (item41) the per-provider models config list: any
-/// model id known to either config is accepted. Unknown model → 400 + error
-/// frame (same shape as /api/tools). Responds with the updated /api/state
-/// snapshot so the browser's footer and panel reflect the swap immediately.
+/// Is the model id known to EITHER the jsonc config roster for the service
+/// OR the service's per-provider models config (item41)? Config ADDS to the
+/// roster (the /api/model rule since item41).
+fn service_knows_model(state: &AppState, service: &str, model: &str) -> bool {
+    state.config.find_model(service, model).is_ok()
+        || models_config::load_from_dirs(&state.models_cfg.local, &state.models_cfg.user, service)
+            .ok()
+            .flatten()
+            .is_some_and(|loaded| loaded.find(model).is_some())
+}
+
+/// POST /api/model — hot-swap the service+model used for SUBSEQUENT agent
+/// runs. item57 body `{"service": "<name>", "model": "<id>"}` swaps BOTH:
+/// the provider is rebuilt from the service (mistral/groq dedicated
+/// providers; opencode-zen/opencode-go → OpenCodeProvider with the
+/// service's base URL) and the agent rebuilt with it (same tool registry,
+/// same per-session FileSessionManager, freshly composed system prompt).
+/// Back-compat: `{"model": "..."}` alone swaps within the CURRENT service.
 ///
-/// Swap scope: PROCESS-GLOBAL, which is also per-session here because this
-/// server process serves exactly one session (`AppState.session_id`). At
-/// boot, provider/model are threaded into `build_agent_from_config`, which
-/// bakes the model id into the provider inside the `Arc<Agent>`; a swap
-/// therefore REBUILDS the agent exactly the same way (same provider, new
-/// model id, shared tool registry, same per-session `FileSessionManager`, and
-/// a freshly composed system prompt for the new model) and stores it in
-/// `AppState.runtime` behind a `RwLock`, so every handler clone and the next
-/// `ws_session` prompt run read the same swap. The swap is NOT persisted: a
-/// server restart returns to the configured/default model.
+/// Validation → 400: unknown service; service disabled in settings
+/// (`disabled_services` — an unsubscribed service stays off even with the
+/// shared key present); service with no API key (a swap would leave the
+/// runtime agent-less); model not in the TARGET service's roster (config
+/// roster OR models config). The swap is PROCESS-GLOBAL, which is also
+/// per-session here (one session per server process), and NOT persisted —
+/// a restart returns to the configured/default service+model. Responds
+/// with the updated /api/state snapshot.
 async fn api_model_swap(
     State(state): State<AppState>,
     Json(body): Json<ModelSwapBody>,
 ) -> Response {
-    let known = state
-        .config
-        .find_model(&state.provider, &body.model)
-        .is_ok()
-        || state.models_cfg.knows_model(&body.model);
-    if !known {
+    let current_service = state.runtime.read().unwrap().service.clone();
+    let target_service = match &body.service {
+        Some(requested) => {
+            if !axonerai::services::is_known(requested) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!("unknown service '{requested}'"),
+                    })),
+                )
+                    .into_response();
+            }
+            let settings = state.load_settings();
+            if !axonerai::services::is_enabled(requested, &settings.disabled_services) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!(
+                            "service '{requested}' is disabled in settings"
+                        ),
+                    })),
+                )
+                    .into_response();
+            }
+            if state.resolve_service_key(requested).is_none() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "ok": false,
+                        "error": format!("no API key for service '{requested}'"),
+                    })),
+                )
+                    .into_response();
+            }
+            requested.clone()
+        }
+        None => current_service,
+    };
+
+    if !service_knows_model(&state, &target_service, &body.model) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "ok": false,
                 "error": format!(
-                    "unknown model '{}' for provider '{}'",
-                    body.model, state.provider
+                    "unknown model '{}' for service '{}'",
+                    body.model, target_service
                 ),
             })),
         )
@@ -1008,13 +1127,14 @@ async fn api_model_swap(
     }
 
     let system_prompt = Some(axonerai::prompt::load_system_prompt(
-        &state.provider,
+        &target_service,
         &body.model,
     ));
     let agent = build_agent_from_config(
         &state.config,
-        &state.provider,
+        &target_service,
         &body.model,
+        state.resolve_service_key(&target_service),
         state.registry.clone(),
         &state.sessions_dir,
         &state.session_id(),
@@ -1024,6 +1144,7 @@ async fn api_model_swap(
 
     {
         let mut runtime = state.runtime.write().unwrap();
+        runtime.service = target_service.clone();
         runtime.model = body.model.clone();
         runtime.system_prompt = system_prompt;
         runtime.agent = agent;
@@ -1055,16 +1176,21 @@ async fn api_session_reset(State(state): State<AppState>) -> Response {
         }
     };
 
-    // Rebuild the agent for the new session id (same provider/model and
+    // Rebuild the agent for the new session id (same service/model and
     // system prompt — only the per-session FileSessionManager changes).
-    let (model, system_prompt) = {
+    let (service, model, system_prompt) = {
         let runtime = state.runtime.read().unwrap();
-        (runtime.model.clone(), runtime.system_prompt.clone())
+        (
+            runtime.service.clone(),
+            runtime.model.clone(),
+            runtime.system_prompt.clone(),
+        )
     };
     let agent = build_agent_from_config(
         &state.config,
-        &state.provider,
+        &service,
         &model,
+        state.resolve_service_key(&service),
         state.registry.clone(),
         &state.sessions_dir,
         &session_id,
@@ -1546,50 +1672,39 @@ fn build_registry() -> ToolRegistry {
     registry
 }
 
+/// Resolve the boot service key from the config override + process env
+/// (the production key-lookup path; tests inject their own via
+/// `AppState.key_lookup`).
+fn resolve_boot_service_key(config: &AppConfig, service: &str) -> Option<String> {
+    let config_override = config
+        .providers
+        .get(service)
+        .and_then(|p| p.api_key.clone());
+    axonerai::services::resolve_key(service, config_override.as_deref(), |key| {
+        std::env::var(key).ok()
+    })
+}
+
 fn build_agent_from_config(
     config: &AppConfig,
-    provider_name: &str,
+    service: &str,
     model_id: &str,
+    api_key: Option<String>,
     registry: ToolRegistry,
     sessions_dir: &std::path::Path,
     session_id: &str,
     system_prompt: Option<String>,
 ) -> anyhow::Result<Arc<Agent>> {
-    let api_key = config.resolve_api_key(provider_name)?;
-    let endpoint = config.endpoint(provider_name)?;
-
-    let provider: Box<dyn axonerai::provider::Provider> = match provider_name {
-        "mistral" => {
-            let mut p = MistralProvider::new(api_key);
-            if !model_id.is_empty() {
-                p = p.with_model(model_id.to_string());
-            }
-            Box::new(p)
-        }
-        "groq" => {
-            let mut p = GroqProvider::new(api_key);
-            if !model_id.is_empty() {
-                p = p.with_model(model_id.to_string());
-            }
-            Box::new(p)
-        }
-        "openai" => {
-            let mut p = OpenAIProvider::new(api_key);
-            if !model_id.is_empty() {
-                p = p.with_model(model_id.to_string());
-            }
-            Box::new(p)
-        }
-        // opencode-zen, opencode-go, or any other OpenAI-compatible provider
-        _ => {
-            let model = if model_id.is_empty() {
-                config.default_model_id(provider_name)?.to_string()
-            } else {
-                model_id.to_string()
-            };
-            Box::new(OpenCodeProvider::new(api_key, endpoint.to_string(), model))
-        }
-    };
+    let api_key = api_key.ok_or_else(|| anyhow::anyhow!("no API key for service '{service}'"))?;
+    // The service → provider mapping (item57): mistral/groq have dedicated
+    // providers, the two opencode endpoints share OpenCodeProvider differing
+    // only by base URL. An axonerai.jsonc endpoint override wins.
+    let provider = axonerai::services::build_provider(
+        service,
+        &api_key,
+        model_id,
+        config.endpoint(service).ok(),
+    )?;
 
     let session_manager =
         FileSessionManager::new(session_id.to_string(), sessions_dir.join("agent-state"))?;
@@ -1686,14 +1801,20 @@ mod tests {
     /// default roster model, and a per-provider models config loaded from a
     /// temp `.axonerai/models` dir (item41) that knows a context window for
     /// the roster's second model only — mirroring "config ADDS to the
-    /// fallbacks".
+    /// fallbacks". The injected key lookup (`keys`) backs service
+    /// resolution (item57) deterministically without env mutation.
     fn test_state() -> AppState {
-        test_state_with(build_registry())
+        test_state_with_keys(build_registry(), &[("MISTRAL_API_KEY", "test-key")])
     }
 
     /// [`test_state`] with an explicit registry (item48 tests inject one
     /// with the MCP facade tools registered regardless of API-key env).
     fn test_state_with(registry: ToolRegistry) -> AppState {
+        test_state_with_keys(registry, &[("MISTRAL_API_KEY", "test-key")])
+    }
+
+    /// [`test_state`] with an explicit key lookup map (item57 test seam).
+    fn test_state_with_keys(registry: ToolRegistry, keys: &[(&str, &str)]) -> AppState {
         let dir = std::env::temp_dir().join(format!("axoner-web-test-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let session_id = uuid::Uuid::now_v7().to_string();
@@ -1737,19 +1858,24 @@ mod tests {
             &config,
             "mistral",
             "zai-glm-5-2",
+            Some("test-key".to_string()),
             registry.clone(),
             &dir,
             &session_id,
             None,
         )
         .ok();
+        let key_map: std::collections::HashMap<String, String> = keys
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         AppState {
             web_root: dir.clone(),
-            provider: "mistral".to_string(),
             config: Arc::new(config),
             models_cfg,
             sessions_dir: dir.clone(),
             runtime: Arc::new(RwLock::new(Runtime {
+                service: "mistral".to_string(),
                 model: "zai-glm-5-2".to_string(),
                 agent,
                 system_prompt: None,
@@ -1762,6 +1888,7 @@ mod tests {
             registry,
             agent_state_dir: dir.join("agent-state"),
             settings_path: dir.join("settings.jsonc"),
+            key_lookup: Arc::new(move |key| key_map.get(key).cloned()),
         }
     }
 
@@ -1779,6 +1906,7 @@ mod tests {
         let response = api_model_swap(
             State(state.clone()),
             Json(ModelSwapBody {
+                service: None,
                 model: "mistral-medium-latest".to_string(),
             }),
         )
@@ -1790,7 +1918,7 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["model"], "mistral-medium-latest");
-        assert_eq!(json["provider"], "mistral");
+        assert_eq!(json["service"], "mistral");
         assert_eq!(json["session"]["id"], state.session_id());
 
         // The swap is visible to any later reader of the shared runtime: the
@@ -1807,6 +1935,7 @@ mod tests {
         let response = api_model_swap(
             State(state.clone()),
             Json(ModelSwapBody {
+                service: None,
                 model: "not-a-model".to_string(),
             }),
         )
@@ -1924,6 +2053,7 @@ mod tests {
         let response = api_model_swap(
             State(state.clone()),
             Json(ModelSwapBody {
+                service: None,
                 model: "mistral-large-latest".to_string(),
             }),
         )
@@ -1944,12 +2074,264 @@ mod tests {
         let response = api_model_swap(
             State(state.clone()),
             Json(ModelSwapBody {
+                service: None,
                 model: "not-in-any-config".to_string(),
             }),
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(state.runtime.read().unwrap().model, "mistral-large-latest");
+    }
+
+    // --- item57: services model ----------------------------------------------
+
+    /// Handler test shorthand: POST /api/model and parse the JSON body.
+    async fn swap(
+        state: &AppState,
+        service: Option<&str>,
+        model: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = api_model_swap(
+            State(state.clone()),
+            Json(ModelSwapBody {
+                service: service.map(str::to_string),
+                model: model.to_string(),
+            }),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    /// /api/state carries `service` (the honest rename); the old `provider`
+    /// field is GONE, not aliased.
+    #[tokio::test]
+    async fn api_state_reports_service_and_drops_provider() {
+        let state = test_state();
+        let bytes = axum::body::to_bytes(
+            api_state(State(state.clone())).await.into_body(),
+            usize::MAX,
+        )
+        .await
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["service"], "mistral");
+        assert_eq!(json["model"], "zai-glm-5-2");
+        assert!(
+            json.get("provider").is_none(),
+            "no lying alias: `provider` must not be on the wire"
+        );
+    }
+
+    /// GET /api/services lists every known service with its connection
+    /// state, the settings disabled list, and the per-service models
+    /// roster (empty array when no config file).
+    #[tokio::test]
+    async fn api_services_lists_known_services_with_connection_state() {
+        let state = test_state_with_keys(
+            build_registry(),
+            &[
+                ("MISTRAL_API_KEY", "m-key"),
+                ("GROQ_API_KEY", "g-key"),
+                // Only the SHARED opencode key: both zen and go connect
+                // through the fallback (the glossing).
+                ("OPENCODE_API_KEY", "shared"),
+            ],
+        );
+        std::fs::write(&state.settings_path, r#"{ "disabled_services": ["groq"] }"#).unwrap();
+
+        let response = api_services(State(state)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let entries = json.as_array().expect("a JSON array of service entries");
+
+        let by_service = |name: &str| {
+            entries
+                .iter()
+                .find(|s| s["service"] == name)
+                .unwrap_or_else(|| panic!("service {name} missing from {json}"))
+        };
+        assert_eq!(entries.len(), 4, "every known service is listed");
+
+        let mistral = by_service("mistral");
+        assert_eq!(mistral["enabled"], true);
+        assert_eq!(mistral["connected"], true);
+        let models = mistral["models"].as_array().unwrap();
+        assert!(!models.is_empty(), "mistral has a roster from the config");
+        assert_eq!(models[0]["id"], "zai-glm-5-2");
+        assert_eq!(models[0]["display"], "GLM-5.2");
+        assert_eq!(models[0]["context_window"], 32768);
+        assert_eq!(models[0]["costs"]["input_per_mtok"], "$0.50");
+
+        let groq = by_service("groq");
+        assert_eq!(groq["enabled"], false, "settings disabled_services wins");
+        assert_eq!(groq["connected"], true, "disabled ≠ unconnected");
+        assert!(
+            groq["models"].as_array().unwrap().is_empty(),
+            "no groq models file → empty roster array"
+        );
+
+        // zen/go glossing: the shared key connects both.
+        for name in ["opencode-zen", "opencode-go"] {
+            let entry = by_service(name);
+            assert_eq!(entry["enabled"], true);
+            assert_eq!(entry["connected"], true, "{name} via shared key");
+            assert!(entry["models"].is_array());
+        }
+    }
+
+    /// GET /api/services recomputes per request (the reload path): a
+    /// settings change and a key change are visible on the next GET with
+    /// no restart.
+    #[tokio::test]
+    async fn api_services_rereads_settings_each_request() {
+        let state = test_state_with_keys(build_registry(), &[("MISTRAL_API_KEY", "m-key")]);
+
+        let read_enabled = |json: &serde_json::Value, name: &str| {
+            json.as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["service"] == name)
+                .unwrap()["enabled"]
+                .as_bool()
+                .unwrap()
+        };
+        let read_connected = |json: &serde_json::Value, name: &str| {
+            json.as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["service"] == name)
+                .unwrap()["connected"]
+                .as_bool()
+                .unwrap()
+        };
+
+        let response = api_services(State(state.clone())).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(read_enabled(&json, "groq"));
+        assert!(!read_connected(&json, "groq"), "no GROQ_API_KEY injected");
+
+        // Persist a disable, then GET again — no restart.
+        std::fs::write(
+            &state.settings_path,
+            r#"{ "disabled_services": ["groq", "opencode-zen"] }"#,
+        )
+        .unwrap();
+        let response = api_services(State(state.clone())).await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(!read_enabled(&json, "groq"));
+        assert!(!read_enabled(&json, "opencode-zen"));
+        assert!(read_enabled(&json, "mistral"), "others unaffected");
+    }
+
+    /// POST /api/model {"service","model"} hot-swaps BOTH: the runtime
+    /// carries the new service + model and the agent is rebuilt against
+    /// the SAME session (registry/FileSessionManager carried over).
+    #[tokio::test]
+    async fn api_model_swap_service_and_model_hot_swaps_runtime() {
+        let state = test_state_with_keys(build_registry(), &[("GROQ_API_KEY", "g-key")]);
+        let session_id = state.session_id();
+
+        let (status, json) = swap(&state, Some("groq"), "openai/gpt-oss-120b").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["service"], "groq");
+        assert_eq!(json["model"], "openai/gpt-oss-120b");
+        assert!(json.get("provider").is_none());
+
+        let runtime = state.runtime.read().unwrap();
+        assert_eq!(runtime.service, "groq");
+        assert_eq!(runtime.model, "openai/gpt-oss-120b");
+        let agent = runtime.agent.as_ref().expect("agent rebuilt");
+        assert_eq!(
+            agent.session_id().expect("session-backed agent"),
+            session_id,
+            "the rebuilt agent keeps the same per-session manager"
+        );
+        assert!(runtime.system_prompt.is_some());
+    }
+
+    /// The zen/go shared-key fallback works at the handler level: swapping
+    /// to opencode-zen with ONLY OPENCODE_API_KEY set succeeds.
+    #[tokio::test]
+    async fn api_model_swap_to_zen_falls_back_to_shared_key() {
+        let state = test_state_with_keys(build_registry(), &[("OPENCODE_API_KEY", "shared")]);
+        let (status, json) = swap(&state, Some("opencode-zen"), "glm-5.2").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["service"], "opencode-zen");
+        assert_eq!(state.runtime.read().unwrap().service, "opencode-zen");
+    }
+
+    /// Unknown service → 400, runtime untouched.
+    #[tokio::test]
+    async fn api_model_swap_unknown_service_is_400() {
+        let state = test_state();
+        let (status, json) = swap(&state, Some("nope"), "whatever").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["ok"], false);
+        assert!(
+            json["error"].as_str().unwrap().contains("nope"),
+            "error names the rejected service: {json}"
+        );
+        let runtime = state.runtime.read().unwrap();
+        assert_eq!(runtime.service, "mistral");
+        assert_eq!(runtime.model, "zai-glm-5-2");
+    }
+
+    /// Model not in the TARGET service's roster → 400, runtime untouched.
+    #[tokio::test]
+    async fn api_model_swap_model_not_in_service_roster_is_400() {
+        let state = test_state_with_keys(build_registry(), &[("GROQ_API_KEY", "g-key")]);
+        let (status, json) = swap(&state, Some("groq"), "not-a-groq-model").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            json["error"].as_str().unwrap().contains("groq"),
+            "error names the target service: {json}"
+        );
+        assert_eq!(state.runtime.read().unwrap().service, "mistral");
+    }
+
+    /// A service disabled in settings is refused even with its key present
+    /// (the shared-key subscriber protection).
+    #[tokio::test]
+    async fn api_model_swap_disabled_service_is_400() {
+        let state = test_state_with_keys(
+            build_registry(),
+            &[("MISTRAL_API_KEY", "m"), ("GROQ_API_KEY", "g")],
+        );
+        std::fs::write(&state.settings_path, r#"{ "disabled_services": ["groq"] }"#).unwrap();
+        let (status, json) = swap(&state, Some("groq"), "openai/gpt-oss-120b").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            json["error"].as_str().unwrap().contains("disabled"),
+            "error names the disable reason: {json}"
+        );
+        assert_eq!(state.runtime.read().unwrap().service, "mistral");
+    }
+
+    /// A service with no resolvable key is refused (a swap would leave the
+    /// runtime agent-less).
+    #[tokio::test]
+    async fn api_model_swap_unconnected_service_is_400() {
+        let state = test_state_with_keys(build_registry(), &[("MISTRAL_API_KEY", "m")]);
+        let (status, json) = swap(&state, Some("groq"), "openai/gpt-oss-120b").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            json["error"].as_str().unwrap().contains("no API key"),
+            "error names the missing key: {json}"
+        );
+        assert_eq!(state.runtime.read().unwrap().service, "mistral");
     }
 
     // --- item49 + item50: skills listing (GET /api/skills) -------------------

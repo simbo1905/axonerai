@@ -12,6 +12,7 @@ pub mod opencode;
 pub mod prompt;
 pub mod provider;
 pub mod rollout;
+pub mod services;
 pub mod session;
 pub mod settings;
 pub mod skills;
