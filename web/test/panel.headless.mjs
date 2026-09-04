@@ -187,6 +187,32 @@ window.fetch = /** @type {typeof window.fetch} */ (
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
+    if (url === "/api/skills") {
+      // item49: the skills listing (local masks user, resolved server-side).
+      return new Response(
+        JSON.stringify([
+          {
+            name: "deploy",
+            description: "ship the release",
+            source: "user",
+            path: "/home/u/.axonerai/skills/deploy/SKILL.md",
+          },
+          {
+            name: "greeting",
+            description: "greet politely",
+            source: "local",
+            path: ".axonerai/skills/greeting/SKILL.md",
+          },
+          {
+            name: "lint",
+            description: "grade the repo",
+            source: "local",
+            path: ".axonerai/skills/lint/SKILL.md",
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
     if (url === "/api/model" && init && init.method === "POST") {
       const body = /** @type {{ model: string }} */ (
         JSON.parse(String(init.body))
@@ -539,17 +565,18 @@ await test("toggling an MCP row POSTs /api/mcp, updates the folder-scoped key, a
   );
 });
 
-await test("typing / opens the menu with all 6 commands", async () => {
+await test("typing / opens the menu with all 7 commands", async () => {
   await type("/");
   const menu = menuEl();
   assert(menu.hidden === false, "menu should be open after typing /");
   const options = [...menu.querySelectorAll("[role=option]")];
-  assertEqual(options.length, 6, "expected 6 commands in the menu");
+  assertEqual(options.length, 7, "expected 7 commands in the menu");
   assertEqual(
     options.map((o) => o.textContent).join("|"),
     [
       "/modelslist models for the current provider and switch",
       "/built-insshow the built-in tools with on/off toggles",
+      "/skillslist available skills",
       "/verbosetoggle verbose output rendering",
       "/renamerename the session: /rename <title>",
       "/helplist the available commands",
@@ -579,7 +606,7 @@ await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input ke
     "agt-slash-opt-1",
     "ArrowDown should move to the second option",
   );
-  for (let i = 0; i < 5; i++) await pressKey("ArrowDown");
+  for (let i = 0; i < 6; i++) await pressKey("ArrowDown");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
     "agt-slash-opt-0",
@@ -588,7 +615,7 @@ await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input ke
   await pressKey("ArrowUp");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
-    "agt-slash-opt-5",
+    "agt-slash-opt-6",
     "ArrowUp should wrap to the last option",
   );
   await pressKey("Escape");
@@ -632,9 +659,45 @@ await test("Enter on /models opens the Models tree; other trees collapse", async
   assert(isCollapsed("Todo"), "Todo should be collapsed after a command");
   assert(isCollapsed("Slash"), "Slash should be collapsed after a command");
   assert(
+    isCollapsed("Skills"),
+    "Skills should be collapsed after a command",
+  );
+  assert(
     isCollapsed("Built-ins"),
     "Built-ins should be collapsed after a command",
   );
+});
+
+await test("/skills opens the Skills tree with name + source tag rows; other trees collapse", async () => {
+  // NOTE: this runs after the /models test, so every other tree is already
+  // collapsed by that command — only the expansion of Skills is new here.
+  await type("/skills");
+  await pressKey("Enter");
+  await waitFor(() => isCollapsed("Skills") === false, "Skills expanded");
+  assertEqual(ta().value, "", "input cleared after running the command");
+  const text = sectionText("Skills");
+  assert(
+    text.includes("greeting [local] — greet politely"),
+    `local row should carry name, [local] tag and description, got ${JSON.stringify(text)}`,
+  );
+  assert(
+    text.includes("deploy [user] — ship the release"),
+    `user row should carry name, [user] tag and description, got ${JSON.stringify(text)}`,
+  );
+  assert(
+    text.includes("lint [local] — grade the repo"),
+    `second local row expected, got ${JSON.stringify(text)}`,
+  );
+  assert(isCollapsed("Context"), "Context should be collapsed after /skills");
+  assert(isCollapsed("Models"), "Models should be collapsed after /skills");
+  assert(isCollapsed("MCP"), "MCP should be collapsed after /skills");
+  assert(isCollapsed("Slash"), "Slash should be collapsed after /skills");
+  // item32: the result line goes to the console bus, not the Slash tree.
+  assert(
+    !slashText().includes("opened the Skills tree"),
+    "skills result must not render in the Slash tree",
+  );
+  await waitFor(() => slashText().includes("/skills"), "skills invocation echo");
 });
 
 await test("selecting a Models row POSTs /api/model and the footer reflects the swap", async () => {

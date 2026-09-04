@@ -106,16 +106,22 @@ test("/model is retired: unknown command", () => {
 test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("").map((c) => c.name),
-    ["models", "built-ins", "verbose", "rename", "help", "console"],
+    ["models", "built-ins", "skills", "verbose", "rename", "help", "console"],
   );
   assert.deepEqual(
     filterCommands("/").map((c) => c.name),
-    ["models", "built-ins", "verbose", "rename", "help", "console"],
+    ["models", "built-ins", "skills", "verbose", "rename", "help", "console"],
   );
   assert.deepEqual(
     filterCommands("/b").map((c) => c.name),
     ["built-ins"],
   );
+  assert.deepEqual(filterCommands("sk"), [
+    {
+      name: "skills",
+      description: "list available skills",
+    },
+  ]);
   assert.deepEqual(
     filterCommands("mo").map((c) => c.name),
     ["models"],
@@ -141,15 +147,19 @@ test("commands are lowercase; input case is not normalized for parsing", () => {
     filterCommands("B").map((c) => c.name),
     ["built-ins"],
   );
+  assert.deepEqual(
+    filterCommands("SK").map((c) => c.name),
+    ["skills"],
+  );
   for (const command of COMMANDS) {
     assert.equal(command.name, command.name.toLowerCase());
   }
 });
 
-test("registry has exactly the v1+console commands with descriptions", () => {
+test("registry has exactly the v1+console+skills commands with descriptions", () => {
   assert.deepEqual(
     COMMANDS.map((c) => c.name),
-    ["models", "built-ins", "verbose", "rename", "help", "console"],
+    ["models", "built-ins", "skills", "verbose", "rename", "help", "console"],
   );
   for (const command of COMMANDS) {
     assert.equal(typeof command.description, "string");

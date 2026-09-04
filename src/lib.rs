@@ -13,6 +13,7 @@ pub mod provider;
 pub mod rollout;
 pub mod session;
 pub mod settings;
+pub mod skills;
 pub mod tool;
 pub mod tools;
 pub mod wire;
@@ -31,6 +32,6 @@ pub use settings::Settings;
 pub use tool::{Tool, ToolRegistry};
 pub use tools::{
     Calculator, Context7McpGetLibraryDocs, Context7McpResolveLibraryId, ListDir, ModelsConfig,
-    ReadFile, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch,
+    ReadFile, ReadSkill, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch,
 };
 pub use wire::{ClientMsg, ServerMsg};

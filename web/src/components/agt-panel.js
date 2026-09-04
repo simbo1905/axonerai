@@ -73,6 +73,15 @@ import { resolveContextWindow } from "../models.mjs";
  */
 
 /**
+ * One row of the Skills tree (item49 /api/skills listing).
+ *
+ * @typedef {object} SkillRow
+ * @property {string} name skill name (the folder name)
+ * @property {string} description frontmatter description
+ * @property {string} source "local" | "user" (| "builtin", reserved)
+ */
+
+/**
  * Collapsible section state kept across re-renders (internal).
  *
  * @typedef {object} Section
@@ -261,7 +270,16 @@ export class AgtPanel extends HTMLElement {
 
     this.#bodyEl = document.createElement("div");
     this.#bodyEl.className = "agt-p-body";
-    for (const name of ["Context", "MCP", "LSP", "Todo", "Models", "Slash", "Built-ins"]) {
+    for (const name of [
+      "Context",
+      "MCP",
+      "LSP",
+      "Todo",
+      "Models",
+      "Skills",
+      "Slash",
+      "Built-ins",
+    ]) {
       const section = createSection(name);
       this.#sections.set(name, section);
       this.#bodyEl.append(section.root);
@@ -452,6 +470,36 @@ export class AgtPanel extends HTMLElement {
   }
 
   /**
+   * Render the Skills tree (slash /skills, item49): one row per skill from
+   * GET /api/skills — `name [source] — description` with the local/user
+   * source tag (the server already applies local-masks-user). Collapses
+   * every other tree, expands Skills (one tree expanded at a time). Rows
+   * are informational (no click action — the chat agent loads a skill body
+   * via its ReadSkill tool).
+   *
+   * @param {readonly SkillRow[]} skills
+   */
+  showSkills(skills) {
+    if (!this.#rendered) return;
+    for (const [name, section] of this.#sections) {
+      section.setCollapsed(name === "Skills" ? false : true);
+    }
+    const section = this.#sections.get("Skills");
+    if (!section) return;
+    if (!Array.isArray(skills) || skills.length === 0) {
+      this.#setLines(section, [{ text: "(none)", cls: "agt-p-dim" }]);
+      return;
+    }
+    this.#setLines(
+      section,
+      skills.map((skill) => ({
+        text: `${skill.name} [${skill.source}] — ${skill.description}`,
+        cls: "agt-p-line",
+      })),
+    );
+  }
+
+  /**
    * Render the Models tree (slash /models): one row per model for the
    * CURRENT provider — `model id (K)` with the context window when known.
    * Collapses every other tree, expands Models (one tree expanded at a
@@ -583,7 +631,15 @@ export class AgtPanel extends HTMLElement {
 
   #setUnavailable() {
     this.setSessionTitle("(unavailable)");
-    for (const name of ["Context", "MCP", "LSP", "Todo", "Models", "Built-ins"]) {
+    for (const name of [
+      "Context",
+      "MCP",
+      "LSP",
+      "Todo",
+      "Models",
+      "Skills",
+      "Built-ins",
+    ]) {
       const section = this.#sections.get(name);
       if (section) {
         this.#setLines(section, [{ text: "(unavailable)", cls: "agt-p-dim" }]);

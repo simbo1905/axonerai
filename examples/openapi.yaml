@@ -60,6 +60,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/ModelsConfig"
 
+  /api/skills:
+    get:
+      summary: Skills listing
+      description: >
+        Every skill discoverable on the server (item49): one entry per
+        `<name>/SKILL.md` under `.axonerai/skills` (repo-local) and
+        `~/.axonerai/skills` (user fallback), LOCAL MASKS USER — a name that
+        exists in both dirs is listed once, sourced `local`. Missing-safe: a
+        missing dir contributes nothing; an unreadable or unparsable SKILL.md
+        is skipped (with a server-side stderr note), never an error. The
+        `builtin` source value is reserved for in-code skills (item50) and is
+        not produced yet. Sorted by name.
+      responses:
+        "200":
+          description: Skill entries, sorted by name
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkillEntry"
+
   /api/tools:
     post:
       summary: Enable or disable a tool
@@ -434,6 +456,27 @@ components:
                 description: Freeform offer text (e.g. "2x usage")
             required: [id, display, context_window]
       required: [provider, source, models]
+
+    SkillEntry:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Skill name (the folder name, e.g. "lint")
+        description:
+          type: string
+          description: Frontmatter description of the skill
+        source:
+          type: string
+          enum: [local, user, builtin]
+          description: >
+            Where the entry was found: "local" (.axonerai/skills, wins) or
+            "user" (~/.axonerai/skills). "builtin" is reserved for item50's
+            in-code skills — not produced yet.
+        path:
+          type: string
+          description: The SKILL.md file backing this entry
+      required: [name, description, source, path]
 
     SessionInfo:
       type: object

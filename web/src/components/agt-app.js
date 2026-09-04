@@ -4,6 +4,7 @@ import { dispatch, registerHandler } from "../dispatch.mjs";
 import { createStore } from "../store.mjs";
 import { COMMANDS, parseInput } from "../commands.mjs";
 import { contextWindowFor, fetchProviderModels, modelsForProvider } from "../models.mjs";
+import { fetchSkills } from "../skills.mjs";
 import { installConsoleBus } from "../console-bus.mjs";
 import { mcpDisabledKey, parseDisabledServers } from "../mcp-prefs.mjs";
 import {
@@ -544,6 +545,19 @@ export class AgtApp extends HTMLElement {
         if (!this.#snapshot) await this.#fetchState();
         console.log("[slash] built-ins: opened the Built-ins tree");
         panel.openBuiltins();
+        return;
+      }
+      case "skills": {
+        // item49: the skills listing is a plain REST read (same convention
+        // as /api/models); a failure reports on the console bus and leaves
+        // the panel alone.
+        const skills = await fetchSkills();
+        if (skills === null) {
+          console.error("[slash] error: /api/skills unavailable");
+          return;
+        }
+        panel.showSkills(skills);
+        console.log("[slash] skills: opened the Skills tree");
         return;
       }
       case "verbose": {

@@ -24,7 +24,7 @@ use axonerai::settings::Settings;
 use axonerai::tool::{ToolInfo, ToolRegistry};
 use axonerai::tools::{
     Calculator, Context7McpGetLibraryDocs, Context7McpResolveLibraryId, ListDir, ModelsConfig,
-    ReadFile, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
+    ReadFile, ReadSkill, TavilyMcpExtract, TavilyMcpSearch, WebFetch, WebSearch, WriteFile,
 };
 use axonerai::wire::{ClientMsg, RolloutRecord, ServerMsg};
 use axonerai::{
@@ -448,6 +448,7 @@ async fn serve(
         .route("/api/session/:uuid/tail", get(api_session_tail))
         .route("/api/state", get(api_state))
         .route("/api/models", get(api_models))
+        .route("/api/skills", get(api_skills))
         .route("/api/tools", post(api_tools_toggle))
         .route("/api/mcp", post(api_mcp_toggle))
         .route("/api/model", post(api_model_swap))
@@ -793,6 +794,17 @@ async fn api_models(State(state): State<AppState>, Query(query): Query<ModelsQue
 #[derive(serde::Deserialize)]
 struct ModelsQuery {
     reload: Option<bool>,
+}
+
+// --- Skills listing (GET /api/skills) ----------------------------------------
+
+/// GET /api/skills — every skill listed from `.axonerai/skills` plus
+/// `~/.axonerai/skills` (LOCAL MASKS USER; item49). Missing-safe: a missing
+/// dir contributes nothing; a broken SKILL.md is skipped server-side with a
+/// stderr note. The `builtin` source value is reserved for item50's in-code
+/// skills — nothing lists one yet.
+async fn api_skills() -> Response {
+    Json(axonerai::skills::list_skills()).into_response()
 }
 
 // --- Tool toggle (POST /api/tools) -----------------------------------------
@@ -1363,6 +1375,7 @@ fn build_registry() -> ToolRegistry {
     registry.register(Box::new(WriteFile::default()));
     registry.register(Box::new(ReadFile::default()));
     registry.register(Box::new(ListDir::default()));
+    registry.register(Box::new(ReadSkill::default()));
     registry.register(Box::new(ModelsConfig::new()));
 
     // Only register the Tavily-backed web tools when an API key is available.
@@ -1784,6 +1797,42 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(state.runtime.read().unwrap().model, "mistral-large-latest");
+    }
+
+    // --- item49: skills listing (GET /api/skills) ----------------------------
+
+    /// GET /api/skills lists the repo's `.axonerai/skills` entries (all
+    /// `local`), including the item49 deterministic `greeting` test skill.
+    /// Deterministic despite any user-dir content: local masks user, and the
+    /// local names asserted here come from the repo itself.
+    #[tokio::test]
+    async fn api_skills_lists_local_repo_skills() {
+        let response = api_skills().await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let skills = json.as_array().expect("a JSON array of skill entries");
+
+        let by_name = |name: &str| {
+            skills
+                .iter()
+                .find(|s| s["name"] == name)
+                .unwrap_or_else(|| panic!("skill {name} missing from {json}"))
+        };
+        for expected in ["greeting", "lint", "update-model-costs"] {
+            let entry = by_name(expected);
+            assert_eq!(entry["source"], "local", "{expected} is a repo skill");
+            assert!(
+                entry["description"].as_str().unwrap_or("").len() > 0,
+                "{expected} carries a frontmatter description"
+            );
+            assert!(
+                entry["path"].as_str().unwrap_or("").ends_with("SKILL.md"),
+                "{expected} points at its SKILL.md"
+            );
+        }
     }
 
     // --- item48: MCP server toggle (POST /api/mcp) ---------------------------

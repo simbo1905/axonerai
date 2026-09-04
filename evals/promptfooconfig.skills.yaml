@@ -1,0 +1,126 @@
+# item49 — skills discovery + invocation evals (the /skills REST surface and
+# the ReadSkill read-only builtin).
+#
+# Run from the repo root (two live axoner-web servers on item49's OWN ports
+# 9530/9531 — not the 9501-9507 eval matrix, NEVER 9090/9516; fresh sessions,
+# i.e. NO -c; kill everything you start):
+#
+#   make build-server
+#   make serve-up PROVIDER=mistral MODEL=zai-glm-5-2 PORT=9530
+#   make serve-up PROVIDER=mistral MODEL=mistral-medium-latest PORT=9531
+#   promptfoo eval -c evals/promptfooconfig.skills.yaml -j 1 --no-share
+#   make serve-down PROVIDER=all
+#
+# Conventions: same task.txt prompt template + agt-provider.mjs WS provider as
+# the other eval configs, maxConcurrency 1, deterministic asserts only.
+# Provider config `transcript: true` appends `\n[tools] <names>` (the
+# tool_call frames seen on the WS) to the output so asserts can require the
+# agent to have CALLED a tool. Test-level `providers:` label filters pin each
+# test to exactly ONE server, so the whole file is ≤4 model calls total.
+#
+# The command under test: `GET /api/skills` lists `<name>/SKILL.md` entries
+# from `.axonerai/skills` (local) + `~/.axonerai/skills` (user fallback,
+# local masks user); the ReadSkill builtin `{"name": "..."}` returns the
+# skill body. The repo ships a deterministic `greeting` test skill whose
+# contract is to reply with EXACTLY one fixed line.
+#
+# Cases (1 model call each):
+#   a) discovery (BOTH drivers: zai-glm-5-2 AND mistral-medium-latest) —
+#      "list the skills you have available" → the agent must actually
+#      discover the skills (ReadSkill/ListDir on the wire transcript) or
+#      name the greeting and lint skills in the reply.
+#   b) invocation (BOTH drivers) — "use the greeting skill" → the reply is
+#      EXACTLY the greeting contract line and nothing else.
+description: item49 skills evals (discovery via ReadSkill/listing, greeting skill invocation)
+
+prompts:
+  # Paths are resolved relative to this config file's directory.
+  - file://task.txt
+
+providers:
+  - id: file://agt-provider.mjs
+    config:
+      port: 9530
+      label: mistral--zai-glm-5-2
+      transcript: true
+  - id: file://agt-provider.mjs
+    config:
+      port: 9531
+      label: mistral--mistral-medium-latest
+      transcript: true
+
+maxConcurrency: 1
+
+defaultTest:
+  options: {}
+
+tests:
+  # ---------------------------------------------------------------- case a
+  # Discovery: the agent must really discover the skills (tool call on the
+  # wire) or answer with the listed skill names. 1 model call per driver.
+  - description: >
+      case a (zai-glm-5-2): "list the skills you have available" — discover
+      via ReadSkill/listing or name greeting + lint
+    providers:
+      - mistral--zai-glm-5-2
+    vars:
+      task: List the skills you have available.
+    assert:
+      - type: javascript
+        value: |
+          const reply = output.split("\n[tools]")[0];
+          return (
+            /\[tools\][^\n]*\bReadSkill\b/.test(output) ||
+            (/\bgreeting\b/.test(reply) && /\blint\b/.test(reply))
+          );
+
+  - description: >
+      case a (mistral-medium-latest): "list the skills you have available" —
+      discover via ReadSkill/listing or name greeting + lint
+    providers:
+      - mistral--mistral-medium-latest
+    vars:
+      task: List the skills you have available.
+    assert:
+      - type: javascript
+        value: |
+          const reply = output.split("\n[tools]")[0];
+          return (
+            /\[tools\][^\n]*\bReadSkill\b/.test(output) ||
+            (/\bgreeting\b/.test(reply) && /\blint\b/.test(reply))
+          );
+
+  # ---------------------------------------------------------------- case b
+  # Invocation: the greeting skill's deterministic contract. Runs after the
+  # discovery probes (the servers own one persistent agent session each, but
+  # the greeting contract only demands the FINAL reply shape). 1 model call
+  # per driver.
+  - description: >
+      case b (zai-glm-5-2): "use the greeting skill" — the reply is EXACTLY
+      the greeting contract line
+    providers:
+      - mistral--zai-glm-5-2
+    vars:
+      task: Use the greeting skill.
+    assert:
+      - type: javascript
+        value: |
+          return (
+            output.split("\n[tools]")[0].trim() ===
+            "Greetings from the axonerai skill system."
+          )
+
+  - description: >
+      case b (mistral-medium-latest): "use the greeting skill" — the reply is
+      EXACTLY the greeting contract line
+    providers:
+      - mistral--mistral-medium-latest
+    vars:
+      task: Use the greeting skill.
+    assert:
+      - type: javascript
+        value: |
+          return (
+            output.split("\n[tools]")[0].trim() ===
+            "Greetings from the axonerai skill system."
+          )

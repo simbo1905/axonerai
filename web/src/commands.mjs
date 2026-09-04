@@ -10,6 +10,8 @@
  * - models:    `run() => void` — opens the panel Models tree (models for the
  *              current provider); selecting a row POSTs /api/model.
  * - built-ins: `run() => void` — opens the panel Built-ins tree.
+ * - skills:    `run() => void` — fetches /api/skills and opens the panel
+ *              Skills tree (name, description, [local]/[user] source tag).
  * - verbose:   `run() => string` — toggles the UI verbose flag and reports
  *              `verbose: on|off`; fires `agt-verbose-changed` on window.
  * - rename:    `run(title: string) => Promise<string>` — WS rename, waits for
@@ -64,6 +66,10 @@ export const COMMANDS = Object.freeze([
   Object.freeze({
     name: "built-ins",
     description: "show the built-in tools with on/off toggles",
+  }),
+  Object.freeze({
+    name: "skills",
+    description: "list available skills",
   }),
   Object.freeze({
     name: "verbose",
