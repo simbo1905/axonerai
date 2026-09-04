@@ -78,7 +78,7 @@ import { resolveContextWindow } from "../models.mjs";
  * @typedef {object} SkillRow
  * @property {string} name skill name (the folder name)
  * @property {string} description frontmatter description
- * @property {string} source "local" | "user" (| "builtin", reserved)
+ * @property {string} source "local" | "user" | "builtin" (in-code, item50)
  */
 
 /**
@@ -472,7 +472,8 @@ export class AgtPanel extends HTMLElement {
   /**
    * Render the Skills tree (slash /skills, item49): one row per skill from
    * GET /api/skills — `name [source] — description` with the local/user
-   * source tag (the server already applies local-masks-user). Collapses
+   * /builtin source tag (the server already applies
+   * local-masks-user-masks-builtin). Collapses
    * every other tree, expands Skills (one tree expanded at a time). Rows
    * are informational (no click action — the chat agent loads a skill body
    * via its ReadSkill tool).

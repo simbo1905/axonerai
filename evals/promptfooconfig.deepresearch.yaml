@@ -1,0 +1,74 @@
+# item50 — LIVE deepresearch eval (the flagship built-in skill).
+#
+# LIVE EVAL: this drives a REAL axoner-web server on mistral-medium-latest
+# with REAL tavily_search / WebFetch tool calls against the live web. Expect
+# web latency and web-content variance; asserts are deterministic in shape
+# (tools were called, citations exist), not in exact text.
+#
+# Run from the repo root (ONE live axoner-web server on item50's OWN port
+# 9532 — not the 9501-9507 eval matrix, not item49's 9530/9531, NEVER
+# 9090/9516; fresh session, i.e. NO -c; kill everything you start):
+#
+#   make build-server
+#   make serve-up PROVIDER=mistral MODEL=mistral-medium-latest PORT=9532
+#   promptfoo eval -c evals/promptfooconfig.deepresearch.yaml -j 1 --no-share
+#   make serve-down PROVIDER=mistral MODEL=mistral-medium-latest PORT=9532
+#
+# Budget: ONE prompt = one agent loop, designed for <=3 model calls plus the
+# tool rounds between them (the skill batches its tool calls). The provider
+# appends `\n[tools] <names>` to the output (agt-provider.mjs transcript
+# mode) so asserts can require real tool CALLS on the wire.
+#
+# Deterministic asserts:
+#   - the transcript `[tools]` line names tavily_search or WebFetch (the
+#     agent really researched instead of answering from memory);
+#   - the reply contains "RFC 8927" and at least one citation-ish marker
+#     (a URL or a saved-corpus path under .axonerai/scratch/deepresearch/).
+description: item50 deepresearch builtin skill — live shallow eval (mistral-medium-latest, port 9532)
+
+prompts:
+  - file://task.txt
+
+providers:
+  - id: file://agt-provider.mjs
+    config:
+      port: 9532
+      label: mistral--mistral-medium-latest
+      transcript: true
+
+maxConcurrency: 1
+
+defaultTest:
+  options: {}
+
+tests:
+  - description: >
+      LIVE: "Use the deepresearch skill to research 'what is JTD (RFC 8927)'
+      and give a short cited report." — the agent must CALL tavily_search
+      and/or WebFetch, and the reply must name RFC 8927 with a citation
+      marker (URL or saved-corpus path).
+    providers:
+      - mistral--mistral-medium-latest
+    vars:
+      task: >-
+        Use the deepresearch skill to research: 'what is JTD (RFC 8927)'
+        and give me a short cited report.
+    assert:
+      - type: javascript
+        value: |
+          // NOTE: multi-line on purpose — promptfoo compiles a SINGLE-LINE
+          // javascript value as an expression, so a leading `return` there
+          // is a SyntaxError (seen on the first live run).
+          const transcript = output;
+          return /\[tools\][^\n]*\b(tavily_search|WebFetch)\b/.test(transcript);
+      - type: javascript
+        value: |
+          const reply = output.split("\n[tools]")[0];
+          return /\bRFC 8927\b/.test(reply);
+      - type: javascript
+        value: |
+          const reply = output.split("\n[tools]")[0];
+          return (
+            /https?:\/\/\S+/.test(reply) ||
+            /\.axonerai\/scratch\/deepresearch\//.test(reply)
+          );

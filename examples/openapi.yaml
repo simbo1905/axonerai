@@ -64,14 +64,14 @@ paths:
     get:
       summary: Skills listing
       description: >
-        Every skill discoverable on the server (item49): one entry per
-        `<name>/SKILL.md` under `.axonerai/skills` (repo-local) and
-        `~/.axonerai/skills` (user fallback), LOCAL MASKS USER — a name that
-        exists in both dirs is listed once, sourced `local`. Missing-safe: a
-        missing dir contributes nothing; an unreadable or unparsable SKILL.md
-        is skipped (with a server-side stderr note), never an error. The
-        `builtin` source value is reserved for in-code skills (item50) and is
-        not produced yet. Sorted by name.
+        Every skill discoverable on the server (item49 + item50): one entry
+        per `<name>/SKILL.md` under `.axonerai/skills` (repo-local) and
+        `~/.axonerai/skills` (user fallback), plus the built-in skills shipped
+        in the binary. LOCAL MASKS USER MASKS BUILTIN — a name that exists at
+        a higher-precedence source is listed once, sourced from the winner.
+        Missing-safe: a missing dir contributes nothing; an unreadable or
+        unparsable SKILL.md is skipped (with a server-side stderr note),
+        never an error. Sorted by name.
       responses:
         "200":
           description: Skill entries, sorted by name

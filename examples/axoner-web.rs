@@ -798,11 +798,11 @@ struct ModelsQuery {
 
 // --- Skills listing (GET /api/skills) ----------------------------------------
 
-/// GET /api/skills — every skill listed from `.axonerai/skills` plus
-/// `~/.axonerai/skills` (LOCAL MASKS USER; item49). Missing-safe: a missing
-/// dir contributes nothing; a broken SKILL.md is skipped server-side with a
-/// stderr note. The `builtin` source value is reserved for item50's in-code
-/// skills — nothing lists one yet.
+/// GET /api/skills — every skill listed from `.axonerai/skills`,
+/// `~/.axonerai/skills` and the built-in skills shipped in the binary
+/// (LOCAL MASKS USER MASKS BUILTIN; item49 + item50). Missing-safe: a
+/// missing dir contributes nothing; a broken SKILL.md is skipped server-side
+/// with a stderr note.
 async fn api_skills() -> Response {
     Json(axonerai::skills::list_skills()).into_response()
 }
@@ -1799,12 +1799,13 @@ mod tests {
         assert_eq!(state.runtime.read().unwrap().model, "mistral-large-latest");
     }
 
-    // --- item49: skills listing (GET /api/skills) ----------------------------
+    // --- item49 + item50: skills listing (GET /api/skills) -------------------
 
     /// GET /api/skills lists the repo's `.axonerai/skills` entries (all
-    /// `local`), including the item49 deterministic `greeting` test skill.
-    /// Deterministic despite any user-dir content: local masks user, and the
-    /// local names asserted here come from the repo itself.
+    /// `local`), including the item49 deterministic `greeting` test skill,
+    /// plus the item50 built-in skills (source `builtin`). Deterministic
+    /// despite any user-dir content: local masks user masks builtin, and the
+    /// names asserted here come from the repo/binary itself.
     #[tokio::test]
     async fn api_skills_lists_local_repo_skills() {
         let response = api_skills().await;
@@ -1833,6 +1834,16 @@ mod tests {
                 "{expected} points at its SKILL.md"
             );
         }
+        // item50: the built-in flagship ships in the listing too.
+        let deepresearch = by_name("deepresearch");
+        assert_eq!(deepresearch["source"], "builtin");
+        assert!(
+            deepresearch["path"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("skills/builtin/"),
+            "the builtin points at its in-code source: {deepresearch}"
+        );
     }
 
     // --- item48: MCP server toggle (POST /api/mcp) ---------------------------

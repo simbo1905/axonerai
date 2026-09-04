@@ -2,9 +2,9 @@
 
 /**
  * item49 `/api/skills` client. One entry per `<name>/SKILL.md` under
- * `.axonerai/skills` (local, wins) plus `~/.axonerai/skills` (user fallback);
- * the server already applies local-masks-user and skips broken files. The
- * `builtin` source value is reserved for item50's in-code skills.
+ * `.axonerai/skills` (local, wins) plus `~/.axonerai/skills` (user fallback)
+ * plus the built-in skills shipped in the binary (item50); the server
+ * already applies local-masks-user-masks-builtin and skips broken files.
  */
 
 import { deepFreeze } from "./wire.mjs";

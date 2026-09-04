@@ -1,25 +1,24 @@
-//! item49 — skills folder resolution + listing + skill-body reading.
+//! item49 + item50 — skills folder resolution + listing + skill-body reading.
 //!
 //! A "skill" is a directory `<name>/SKILL.md` under either `.axonerai/skills/`
 //! (repo-local, shareable) or `~/.axonerai/skills/` (user fallback). LOCAL
-//! MASKS USER — the same precedence as the per-provider models config
-//! (src/models_config.rs). The SKILL.md frontmatter is the official format: a
-//! `---` fenced block of `key: value` lines carrying at least `name` and
-//! `description`.
+//! MASKS USER MASKS BUILTIN — the same precedence as the per-provider models
+//! config (src/models_config.rs); built-in skills ship IN THE CODE (item50,
+//! src/builtin_skills.rs) and are shadowed by same-named folder skills. The
+//! SKILL.md frontmatter is the official format: a `---` fenced block of
+//! `key: value` lines carrying at least `name` and `description`.
 //!
 //! Everything here is missing-safe and never crashes on broken content: a
 //! missing skills dir yields no entries; an unreadable or unparsable SKILL.md
-//! is skipped with a one-line stderr note. The `Builtin` source variant is
-//! RESERVED (item50 will serve in-code built-in skills even with empty
-//! folders) — nothing lists or resolves a builtin skill yet.
+//! is skipped with a one-line stderr note. A broken BUILT-IN skill is a
+//! compile-time bug caught by the builtin_skills tests, not runtime data.
 
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Where a listed skill comes from. `Builtin` is reserved for item50 (skills
-/// shipped in code, servable with empty folders); the current listing only
-/// ever produces `local` / `user` entries.
+/// Where a listed skill comes from: a repo-local folder, the user folder, or
+/// shipped in the binary (src/builtin_skills.rs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillSource {
@@ -61,32 +60,99 @@ pub fn user_dir() -> PathBuf {
     }
 }
 
-/// Parse the official `---`-fenced `key: value` frontmatter of a SKILL.md.
-/// Returns `(name, description)`; `None` when the fence is missing, the
-/// block has no closing fence, or either required key is absent/blank.
-/// Unknown keys are tolerated.
-pub fn parse_frontmatter(content: &str) -> Option<(String, String)> {
+/// Parse every `key: value` line of the official `---`-fenced frontmatter,
+/// in file order. Returns `None` when the fence is missing or unclosed.
+/// Unknown keys are tolerated; duplicate keys keep their last value when
+/// consumed by `PromptPatch::from_fields` (single-line values only — the
+/// format is flat `key: value` lines, same as item49).
+pub fn parse_frontmatter_fields(content: &str) -> Option<Vec<(String, String)>> {
     let mut lines = content.lines();
     if lines.next()?.trim() != "---" {
         return None;
     }
-    let mut name: Option<String> = None;
-    let mut description: Option<String> = None;
+    let mut fields = Vec::new();
     for line in lines {
         let trimmed = line.trim();
         if trimmed == "---" {
-            break;
+            return Some(fields);
         }
         if let Some((key, value)) = trimmed.split_once(':') {
-            let value = value.trim();
-            match key.trim() {
-                "name" if !value.is_empty() => name = Some(value.to_string()),
-                "description" if !value.is_empty() => description = Some(value.to_string()),
-                _ => {}
-            }
+            fields.push((key.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    None
+}
+
+/// Parse the official frontmatter's two required keys: `(name, description)`.
+/// `None` when the fence is missing, the block has no closing fence, or
+/// either required key is absent/blank.
+pub fn parse_frontmatter(content: &str) -> Option<(String, String)> {
+    let fields = parse_frontmatter_fields(content)?;
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    for (key, value) in &fields {
+        match key.as_str() {
+            "name" if !value.is_empty() => name = Some(value.clone()),
+            "description" if !value.is_empty() => description = Some(value.clone()),
+            _ => {}
         }
     }
     Some((name?, description?))
+}
+
+/// A skill-declared system-prompt patch (item50, frontmatter-only): the
+/// optional `system-prompt-prepend`, `system-prompt-append` and
+/// `system-prompt-replace` SKILL.md fields. Only built-in skills' patches
+/// are composed (src/prompt.rs, at agent-build time); a skill with none of
+/// these fields parses to an empty, inert patch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptPatch {
+    pub prepend: Option<String>,
+    pub append: Option<String>,
+    pub replace: Option<String>,
+}
+
+impl PromptPatch {
+    /// Extract the three patch fields from parsed frontmatter fields.
+    /// Unrelated keys are ignored; blank values never count.
+    pub fn from_fields(fields: &[(String, String)]) -> PromptPatch {
+        let mut patch = PromptPatch::default();
+        for (key, value) in fields {
+            if value.is_empty() {
+                continue;
+            }
+            match key.as_str() {
+                "system-prompt-prepend" => patch.prepend = Some(value.clone()),
+                "system-prompt-append" => patch.append = Some(value.clone()),
+                "system-prompt-replace" => patch.replace = Some(value.clone()),
+                _ => {}
+            }
+        }
+        patch
+    }
+
+    /// A patch with no fields at all composes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.prepend.is_none() && self.append.is_none() && self.replace.is_none()
+    }
+
+    /// Apply this patch to a prompt. `replace` wins outright (it replaces
+    /// the whole prompt, including this skill's own prepend/append);
+    /// otherwise prepend goes above and append goes below, joined by a
+    /// blank line.
+    pub fn apply_to(&self, prompt: &str) -> String {
+        if let Some(replace) = &self.replace {
+            return replace.clone();
+        }
+        let mut out = prompt.to_string();
+        if let Some(prepend) = &self.prepend {
+            out = format!("{prepend}\n\n{out}");
+        }
+        if let Some(append) = &self.append {
+            out = format!("{out}\n\n{append}");
+        }
+        out
+    }
 }
 
 /// List every `<name>/SKILL.md` under one skills dir. A missing or
@@ -134,9 +200,10 @@ fn list_dir_skills(dir: &Path, source: SkillSource) -> Vec<SkillEntry> {
     entries
 }
 
-/// List all skills from both candidate dirs, LOCAL MASKS USER. A name that
-/// exists in both dirs appears once, sourced `local`. Missing dirs are
-/// empty; the result is sorted by name for a deterministic listing.
+/// List all skills from both candidate dirs plus the built-in skills, LOCAL
+/// MASKS USER MASKS BUILTIN. A name that exists at a higher-precedence
+/// source appears once, sourced from the winner. Missing dirs are empty;
+/// the result is sorted by name for a deterministic listing.
 pub fn list_skills_from(local: &Path, user: &Path) -> Vec<SkillEntry> {
     let local_entries = list_dir_skills(local, SkillSource::Local);
     let local_names: HashSet<String> = local_entries
@@ -146,6 +213,12 @@ pub fn list_skills_from(local: &Path, user: &Path) -> Vec<SkillEntry> {
     let mut all = local_entries;
     for entry in list_dir_skills(user, SkillSource::User) {
         if !local_names.contains(&entry.name) {
+            all.push(entry.clone());
+        }
+    }
+    let taken: HashSet<String> = all.iter().map(|entry| entry.name.clone()).collect();
+    for entry in crate::builtin_skills::entries() {
+        if !taken.contains(&entry.name) {
             all.push(entry);
         }
     }
@@ -158,7 +231,8 @@ pub fn list_skills() -> Vec<SkillEntry> {
     list_skills_from(&local_dir(), &user_dir())
 }
 
-/// Resolve one skill by name against both dirs, LOCAL MASKS USER, and
+/// Resolve one skill by name: `.axonerai/skills`, then `~/.axonerai/skills`,
+/// then the built-in skills (item50) — LOCAL MASKS USER MASKS BUILTIN — and
 /// return the SKILL.md content. `Err` carries the user-facing error message
 /// (surfaced as `Ok("Error: ...")` by the ReadSkill tool, per the pre-jail
 /// tools' convention). Missing dirs are missing-safe: the error says so
@@ -188,8 +262,11 @@ pub fn read_skill_from(local: &Path, user: &Path, name: &str) -> Result<String, 
             _ => {}
         }
     }
+    if let Some(content) = crate::builtin_skills::read_builtin(name) {
+        return Ok(content.to_string());
+    }
     Err(format!(
-        "Error: no skill named '{name}' (looked in .axonerai/skills and ~/.axonerai/skills; use ListDir on .axonerai/skills to discover names)"
+        "Error: no skill named '{name}' (looked in .axonerai/skills, ~/.axonerai/skills and the built-in skills; use ListDir on .axonerai/skills to discover the folder skills)"
     ))
 }
 
@@ -269,13 +346,22 @@ mod tests {
     fn missing_dirs_are_empty() {
         let root = temp_root("missing");
         // The skills dirs exist (fixture) but contain nothing; then a
-        // nonexistent root is also empty.
-        assert!(
-            list_skills_from(&root.join(".axonerai/skills"), &root.join("nope/skills")).is_empty()
+        // nonexistent root is also missing-safe. item50: even with BOTH
+        // folders empty the built-in skills are still listed.
+        let skills = list_skills_from(&root.join(".axonerai/skills"), &root.join("nope/skills"));
+        assert_eq!(
+            skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["deepresearch"],
+            "only the builtin remains"
         );
         let nowhere =
             std::env::temp_dir().join(format!("axonerai-skills-nowhere-{}", std::process::id()));
-        assert!(list_skills_from(&nowhere, &root.join(".axonerai/skills")).is_empty());
+        assert!(
+            list_skills_from(&nowhere, &root.join(".axonerai/skills"))
+                .iter()
+                .all(|s| s.source == SkillSource::Builtin),
+            "missing dirs contribute nothing beyond the builtins"
+        );
     }
 
     #[test]
@@ -295,7 +381,11 @@ mod tests {
 
         let skills = list_skills_from(&root.join(".axonerai/skills"), &user_dir);
         let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["deploy", "greeting", "lint"], "sorted by name");
+        assert_eq!(
+            names,
+            vec!["deepresearch", "deploy", "greeting", "lint"],
+            "sorted by name (builtin included)"
+        );
         let by_name = |name: &str| {
             skills
                 .iter()
@@ -306,6 +396,7 @@ mod tests {
         assert_eq!(by_name("greeting").source, SkillSource::Local);
         assert_eq!(by_name("deploy").source, SkillSource::User);
         assert_eq!(by_name("deploy").description, "ship it");
+        assert_eq!(by_name("deepresearch").source, SkillSource::Builtin);
         assert!(by_name("deploy").path.ends_with("SKILL.md"));
     }
 
@@ -328,9 +419,10 @@ mod tests {
         .expect("write user");
 
         let skills = list_skills_from(&local_dir, &user_dir);
-        assert_eq!(skills.len(), 1, "masked: one entry");
-        assert_eq!(skills[0].source, SkillSource::Local);
-        assert_eq!(skills[0].description, "the local one");
+        let shared: Vec<_> = skills.iter().filter(|s| s.name == "shared").collect();
+        assert_eq!(shared.len(), 1, "masked: one entry");
+        assert_eq!(shared[0].source, SkillSource::Local);
+        assert_eq!(shared[0].description, "the local one");
     }
 
     #[test]
@@ -346,7 +438,11 @@ mod tests {
         fs::write(local_dir.join("fenceless/SKILL.md"), "just text\n").expect("fenceless");
 
         let skills = list_skills_from(&local_dir, &root.join("nowhere"));
-        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        let names: Vec<&str> = skills
+            .iter()
+            .filter(|s| s.source != SkillSource::Builtin)
+            .map(|s| s.name.as_str())
+            .collect();
         assert_eq!(names, vec!["good"], "broken entries skipped, good one kept");
     }
 
@@ -390,5 +486,133 @@ mod tests {
             traversal.starts_with("Error:") && traversal.contains("invalid skill name"),
             "got: {traversal}"
         );
+    }
+
+    // ------------------------------------------------------ item50: builtin
+
+    #[test]
+    fn builtin_skills_are_listed_when_folders_are_empty() {
+        let root = temp_root("builtin-list");
+        let skills = list_skills_from(&root.join(".axonerai/skills"), &root.join("home/skills"));
+        let deepresearch = skills
+            .iter()
+            .find(|s| s.name == "deepresearch")
+            .expect("deepresearch listed");
+        assert_eq!(deepresearch.source, SkillSource::Builtin);
+        assert!(
+            deepresearch.path.starts_with("skills/builtin/"),
+            "path points at the in-code source: {}",
+            deepresearch.path
+        );
+        assert!(!deepresearch.description.is_empty());
+    }
+
+    #[test]
+    fn local_masks_user_masks_builtin_for_the_same_name() {
+        let root = temp_root("mask-builtin");
+        let local_dir = root.join(".axonerai/skills");
+        let user_dir = root.join("home/.axonerai/skills");
+        fs::create_dir_all(user_dir.join("deepresearch")).expect("seed user");
+        fs::write(
+            user_dir.join("deepresearch/SKILL.md"),
+            skill_md("deepresearch", "the user one"),
+        )
+        .expect("write user");
+
+        let skills = list_skills_from(&local_dir, &user_dir);
+        let entry = skills
+            .iter()
+            .find(|s| s.name == "deepresearch")
+            .expect("listed once");
+        assert_eq!(entry.source, SkillSource::User, "user masks builtin");
+        assert_eq!(entry.description, "the user one");
+
+        fs::create_dir_all(local_dir.join("deepresearch")).expect("seed local");
+        fs::write(
+            local_dir.join("deepresearch/SKILL.md"),
+            skill_md("deepresearch", "the local one"),
+        )
+        .expect("write local");
+        let skills = list_skills_from(&local_dir, &user_dir);
+        let entry = skills
+            .iter()
+            .find(|s| s.name == "deepresearch")
+            .expect("listed once");
+        assert_eq!(entry.source, SkillSource::Local, "local masks user");
+        assert_eq!(entry.description, "the local one");
+    }
+
+    #[test]
+    fn read_skill_falls_back_to_builtin_last() {
+        let root = temp_root("read-builtin");
+        let local_dir = root.join(".axonerai/skills");
+        let user_dir = root.join("home/.axonerai/skills");
+
+        let body = read_skill_from(&local_dir, &user_dir, "deepresearch").expect("builtin");
+        assert!(
+            body.starts_with("---") && body.contains("name: deepresearch"),
+            "the full builtin SKILL.md is returned: {body}"
+        );
+
+        // A same-named folder skill shadows the builtin.
+        write_skill(
+            &root,
+            "",
+            "deepresearch",
+            &skill_md("deepresearch", "local"),
+        );
+        let shadowed = read_skill_from(&local_dir, &user_dir, "deepresearch").expect("local wins");
+        assert!(
+            shadowed.contains("local") && !shadowed.contains("cite"),
+            "the folder skill must win: {shadowed}"
+        );
+
+        let missing = read_skill_from(&local_dir, &user_dir, "nope").unwrap_err();
+        assert!(
+            missing.contains("built-in skills"),
+            "the error names all three sources: {missing}"
+        );
+    }
+
+    #[test]
+    fn prompt_patch_parses_frontmatter_fields() {
+        let fields = vec![
+            ("name".to_string(), "x".to_string()),
+            ("system-prompt-prepend".to_string(), "P".to_string()),
+            ("system-prompt-append".to_string(), "A".to_string()),
+            ("system-prompt-replace".to_string(), "R".to_string()),
+            ("system-prompt-prepend".to_string(), "P2".to_string()),
+            ("system-prompt-prepend".to_string(), String::new()),
+            ("unrelated".to_string(), "v".to_string()),
+        ];
+        let patch = PromptPatch::from_fields(&fields);
+        assert_eq!(patch.prepend.as_deref(), Some("P2"), "last value wins");
+        assert_eq!(patch.append.as_deref(), Some("A"));
+        assert_eq!(patch.replace.as_deref(), Some("R"));
+        assert!(!patch.is_empty());
+
+        let inert = PromptPatch::from_fields(&[("name".to_string(), "x".to_string())]);
+        assert!(inert.is_empty(), "no patch fields → inert");
+        assert_eq!(inert.apply_to("base"), "base", "an inert patch is a no-op");
+    }
+
+    #[test]
+    fn prompt_patch_composition_order_is_prepend_base_append() {
+        let patch = PromptPatch {
+            prepend: Some("BEFORE".to_string()),
+            append: Some("AFTER".to_string()),
+            replace: None,
+        };
+        assert_eq!(patch.apply_to("BASE"), "BEFORE\n\nBASE\n\nAFTER");
+    }
+
+    #[test]
+    fn prompt_patch_replace_wins_over_prepend_and_append() {
+        let patch = PromptPatch {
+            prepend: Some("BEFORE".to_string()),
+            append: Some("AFTER".to_string()),
+            replace: Some("REPLACED".to_string()),
+        };
+        assert_eq!(patch.apply_to("BASE"), "REPLACED");
     }
 }

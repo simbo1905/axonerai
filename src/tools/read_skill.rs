@@ -1,14 +1,16 @@
-//! item49 — the read-only `ReadSkill` builtin: how a chat agent loads a
-//! skill body.
+//! item49 + item50 — the read-only `ReadSkill` builtin: how a chat agent
+//! loads a skill body.
 //!
 //! Resolution matches the /api/skills listing (src/skills.rs): a skill is
 //! `<name>/SKILL.md` under `.axonerai/skills` (repo-local) or
-//! `~/.axonerai/skills` (user fallback), LOCAL MASKS USER. Discovery is
-//! deliberately composable: the agent can `ListDir` on `.axonerai/skills`
-//! to learn the names, then `ReadSkill` one of them. A missing or broken
-//! skill is an `Ok("Error: ...")` result (fed back to the model), never a
-//! run abort. Read-only by default, so it survives the `--tools-readonly`
-//! registry filter.
+//! `~/.axonerai/skills` (user fallback), LOCAL MASKS USER MASKS BUILTIN —
+//! built-in skills (item50, src/builtin_skills.rs) ship in the binary and
+//! are resolved last. Discovery is deliberately composable: the agent can
+//! `ListDir` on `.axonerai/skills` to learn the folder-skill names, then
+//! `ReadSkill` one of them (built-ins are not folders — /api/skills lists
+//! them too). A missing or broken skill is an `Ok("Error: ...")` result
+//! (fed back to the model), never a run abort. Read-only by default, so it
+//! survives the `--tools-readonly` registry filter.
 
 use crate::skills::{self, local_dir, user_dir};
 use crate::tool::Tool;
@@ -42,7 +44,7 @@ impl Tool for ReadSkill {
     }
 
     fn description(&self) -> String {
-        "Reads the SKILL.md body of one named skill (read-only, cannot write). Skills live as <name>/SKILL.md under .axonerai/skills (local, wins) or ~/.axonerai/skills (fallback). To discover skill names, ListDir .axonerai/skills first. Usage: {\"name\": \"greeting\"}".to_string()
+        "Reads the SKILL.md body of one named skill (read-only, cannot write). Skills live as <name>/SKILL.md under .axonerai/skills (local, wins) or ~/.axonerai/skills (fallback); same-named built-in skills shipped in the binary are used last. To discover folder skill names, ListDir .axonerai/skills first. Usage: {\"name\": \"greeting\"}".to_string()
     }
 
     fn input_schema(&self) -> Value {
@@ -206,6 +208,21 @@ mod tests {
         let root = temp_root("no-input");
         let result = tool(&root).execute(json!({})).await;
         assert!(result.is_err(), "missing name must error: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn builtin_skills_resolve_through_the_tool() {
+        // item50: with both folder dirs empty, the built-in deepresearch
+        // resolves (source builtin); the module doc's "reserved" note is gone.
+        let root = temp_root("builtin");
+        let out = tool(&root)
+            .execute(json!({"name": "deepresearch"}))
+            .await
+            .expect("execute succeeds");
+        assert!(
+            out.contains("name: deepresearch") && out.contains("tavily_search"),
+            "the builtin SKILL.md body is returned: {out}"
+        );
     }
 
     #[test]

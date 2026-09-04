@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod builtin_skills;
 pub mod config;
 pub mod executor;
 pub mod file_session_manager;
