@@ -32,5 +32,10 @@
       "type": "float64"
     }
   },
+  "optionalProperties": {
+    "abridged": {
+      "type": "boolean"
+    }
+  },
   "additionalProperties": false
 }

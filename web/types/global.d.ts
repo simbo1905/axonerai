@@ -39,6 +39,12 @@ declare global {
       fail: number;
       details: Array<{ name: string; ok: boolean; error?: string }>;
     };
+    /** Headless outgoing-frame validation results (client.headless.mjs). */
+    __CLIENT_TEST_RESULTS__?: {
+      pass: number;
+      fail: number;
+      details: Array<{ name: string; ok: boolean; error?: string }>;
+    };
     /** Headless panel + slash-menu results (panel.headless.mjs). */
     __PANEL_TEST_RESULTS__?: {
       pass: number;

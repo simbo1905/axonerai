@@ -11,6 +11,10 @@ export function validate_error(instance: any): any;
 
 export function validate_pong(instance: any): any;
 
+export function validate_prompt(instance: any): any;
+
+export function validate_provider_models(instance: any): any;
+
 export function validate_ready(instance: any): any;
 
 export function validate_rename(instance: any): any;
@@ -30,6 +34,8 @@ export interface InitOutput {
     readonly validate_console_entry: (a: any) => any;
     readonly validate_error: (a: any) => any;
     readonly validate_pong: (a: any) => any;
+    readonly validate_prompt: (a: any) => any;
+    readonly validate_provider_models: (a: any) => any;
     readonly validate_ready: (a: any) => any;
     readonly validate_rename: (a: any) => any;
     readonly validate_session_meta: (a: any) => any;

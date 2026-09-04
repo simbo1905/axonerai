@@ -276,6 +276,41 @@ fn bad_case_j_extra_field_on_session_meta() {
     );
 }
 
+/// The browser's catch-up reconstruction synthesizes a partial `tool_call`
+/// with an optional `abridged: true` flag (the pretty heads ARE truncated);
+/// the schema sanctions that flag as `optionalProperties`, so it must
+/// validate clean both present and absent, and reject non-boolean values.
+#[test]
+fn tool_call_optional_abridged_flag_is_schema_sanctioned() {
+    let schema = load_schema("tool_call");
+
+    let mut flagged = fixture_value("tool_call");
+    flagged["abridged"] = json!(true);
+    assert!(
+        validate(&schema, &flagged).is_empty(),
+        "tool_call with abridged:true must have zero JTD errors, got: {:?}",
+        validate(&schema, &flagged)
+    );
+
+    let plain = fixture_value("tool_call");
+    assert!(
+        validate(&schema, &plain).is_empty(),
+        "tool_call without abridged must have zero JTD errors"
+    );
+}
+
+#[test]
+fn bad_case_k_abridged_as_string_on_tool_call() {
+    let schema = load_schema("tool_call");
+    let mut bad = fixture_value("tool_call");
+    bad["abridged"] = json!("yes");
+    let errors = validate(&schema, &bad);
+    assert!(
+        !errors.is_empty(),
+        "tool_call with a non-boolean abridged must produce errors"
+    );
+}
+
 #[test]
 fn client_rename_round_trips_against_schema() {
     let client = ClientMsg::Rename {

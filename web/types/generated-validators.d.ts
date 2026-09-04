@@ -65,3 +65,39 @@ export function validateSession_meta(instance: any): ValidationError[];
  * @returns {ValidationError[]}
  */
 export function validateConsole_entry(instance: any): ValidationError[];
+
+/**
+ * Validate a `tool_call` event against its schema.
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateTool_call(instance: any): ValidationError[];
+
+/**
+ * Validate an outgoing `rename` control-plane frame against its schema.
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateRename(instance: any): ValidationError[];
+
+/**
+ * Validate a `session_rename` rollout record against its schema.
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateSession_rename(instance: any): ValidationError[];
+
+/**
+ * Validate an outgoing `prompt` frame against its schema
+ * (`schemas/prompt.jdt.json` — the client → server chat prompt contract).
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validatePrompt(instance: any): ValidationError[];
+
+/**
+ * Validate a `/api/models` payload against its schema.
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateProvider_models(instance: any): ValidationError[];

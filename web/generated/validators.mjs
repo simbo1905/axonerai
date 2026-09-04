@@ -3,6 +3,8 @@ export { validate as validateAssistant } from "./assistant.mjs";
 export { validate as validateConsole_entry } from "./console_entry.mjs";
 export { validate as validateError } from "./error.mjs";
 export { validate as validatePong } from "./pong.mjs";
+export { validate as validatePrompt } from "./prompt.mjs";
+export { validate as validateProvider_models } from "./provider_models.mjs";
 export { validate as validateReady } from "./ready.mjs";
 export { validate as validateRename } from "./rename.mjs";
 export { validate as validateSession_meta } from "./session_meta.mjs";

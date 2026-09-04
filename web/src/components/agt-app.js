@@ -222,9 +222,9 @@ export class AgtApp extends HTMLElement {
       const local = await getAll(db, sessionId);
       const frontier = frontierOf(local);
       if (local.length > 0) {
-        this.#store.appendAll(
-          local.map((record) => deepFreeze(/** @type {ChatEvent} */ (record.event))),
-        );
+        // getAll re-validates + deep-freezes at the history read boundary —
+        // records arrive frozen and need no re-freezing here.
+        this.#store.appendAll(local.map((record) => record.event));
       }
       const res = await fetch(
         `/api/session/${encodeURIComponent(sessionId)}?after=${frontier}`,
@@ -306,7 +306,10 @@ export class AgtApp extends HTMLElement {
     if (frame.type === "tool_call") {
       const meta = await extractToolCallMeta(frame.text);
       if (!meta) return null;
-      /** @type {ToolCallEvent & { abridged: true }} */
+      // Schema-sanctioned reconstruction: `abridged` is an optional
+      // `schemas/tool_call.jdt.json` property (the pretty heads ARE
+      // truncated), so the synthesized partial is a valid `ToolCallEvent`.
+      /** @type {ToolCallEvent} */
       const partial = {
         _type: "tool_call",
         id: null,

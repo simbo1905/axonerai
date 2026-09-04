@@ -102,6 +102,38 @@ fn valid_ack_with_null_message_validates_clean() {
     assert!(ack::validate(&value).is_empty());
 }
 
+/// The browser's catch-up reconstruction synthesizes a partial `tool_call`
+/// with an optional `abridged: true` flag (the pretty heads ARE truncated);
+/// the schema sanctions that flag as optional, so it must validate clean.
+#[test]
+fn valid_tool_call_with_optional_abridged_flag_validates_clean() {
+    let mut value = valid_fixture("tool_call");
+    value["abridged"] = json!(true);
+    assert!(
+        tool_call::validate(&value).is_empty(),
+        "optional abridged flag must be accepted"
+    );
+    let mut absent = valid_fixture("tool_call");
+    absent
+        .as_object_mut()
+        .expect("fixture is an object")
+        .remove("abridged");
+    assert!(
+        tool_call::validate(&absent).is_empty(),
+        "absent abridged flag must be accepted"
+    );
+}
+
+#[test]
+fn bad_case_abridged_as_string_on_tool_call() {
+    let mut bad = valid_fixture("tool_call");
+    bad["abridged"] = json!("yes");
+    assert!(
+        !tool_call::validate(&bad).is_empty(),
+        "tool_call with a non-boolean abridged must produce errors"
+    );
+}
+
 #[test]
 fn bad_case_a_wrong_type_constant_on_ready() {
     let mut bad = valid_fixture("ready");

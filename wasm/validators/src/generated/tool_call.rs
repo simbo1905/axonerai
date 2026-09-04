@@ -101,8 +101,15 @@ pub fn validate(instance: &Value) -> Vec<(String, String)> {
     } else {
       e.push((p.to_string(), format!("{sp}/properties/ts")));
     }
+    if let Some(pv) = obj.get("abridged") {
+      let ip_o_abridged = format!("{p}/abridged");
+      let sp_o_abridged = format!("{sp}/optionalProperties/abridged");
+      if !pv.is_boolean() {
+        e.push((ip_o_abridged.to_string(), format!("{sp_o_abridged}/type")));
+      }
+    }
     for k in obj.keys() {
-      if k.as_str() != "_type" && k.as_str() != "args_pretty" && k.as_str() != "bytes_down" && k.as_str() != "bytes_up" && k.as_str() != "duration_ms" && k.as_str() != "id" && k.as_str() != "result_pretty" && k.as_str() != "session_id" && k.as_str() != "tool" && k.as_str() != "ts" {
+      if k.as_str() != "_type" && k.as_str() != "args_pretty" && k.as_str() != "bytes_down" && k.as_str() != "bytes_up" && k.as_str() != "duration_ms" && k.as_str() != "id" && k.as_str() != "result_pretty" && k.as_str() != "session_id" && k.as_str() != "tool" && k.as_str() != "ts" && k.as_str() != "abridged" {
         e.push((format!("{p}/{k}"), sp.to_string()));
       }
     }

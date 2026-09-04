@@ -13,7 +13,6 @@
 //! binary); folder skills (local/user) never contribute patches.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::builtin_skills::prompt_patches;
 use crate::skills::PromptPatch;
@@ -60,6 +59,7 @@ pub fn load_system_prompt(provider: &str, model: &str) -> String {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Removes the probe file when dropped, even if an assertion panics.
     struct Cleanup(String);

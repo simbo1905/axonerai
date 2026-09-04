@@ -68,6 +68,8 @@ mod wasm_exports {
         validate_console_entry => console_entry,
         validate_error => error,
         validate_pong => pong,
+        validate_prompt => prompt,
+        validate_provider_models => provider_models,
         validate_ready => ready,
         validate_rename => rename,
         validate_session_meta => session_meta,

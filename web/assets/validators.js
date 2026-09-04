@@ -49,6 +49,24 @@ export function validate_pong(instance) {
  * @param {any} instance
  * @returns {any}
  */
+export function validate_prompt(instance) {
+    const ret = wasm.validate_prompt(instance);
+    return ret;
+}
+
+/**
+ * @param {any} instance
+ * @returns {any}
+ */
+export function validate_provider_models(instance) {
+    const ret = wasm.validate_provider_models(instance);
+    return ret;
+}
+
+/**
+ * @param {any} instance
+ * @returns {any}
+ */
 export function validate_ready(instance) {
     const ret = wasm.validate_ready(instance);
     return ret;

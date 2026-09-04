@@ -45,8 +45,11 @@ export function validate(instance) {
     else {
       if (typeof instance["ts"] !== "number" || !Number.isFinite(instance["ts"])) e.push({instancePath: "" + "/ts", schemaPath: "" + "/properties/ts" + "/type"});
     }
+    if ("abridged" in instance) {
+      if (typeof instance["abridged"] !== "boolean") e.push({instancePath: "" + "/abridged", schemaPath: "" + "/optionalProperties/abridged" + "/type"});
+    }
     for (const k in instance) {
-      if (k !== "_type" && k !== "args_pretty" && k !== "bytes_down" && k !== "bytes_up" && k !== "duration_ms" && k !== "id" && k !== "result_pretty" && k !== "session_id" && k !== "tool" && k !== "ts") e.push({instancePath: "" + "/" + k, schemaPath: ""});
+      if (k !== "_type" && k !== "args_pretty" && k !== "bytes_down" && k !== "bytes_up" && k !== "duration_ms" && k !== "id" && k !== "result_pretty" && k !== "session_id" && k !== "tool" && k !== "ts" && k !== "abridged") e.push({instancePath: "" + "/" + k, schemaPath: ""});
     }
   }
   return e;

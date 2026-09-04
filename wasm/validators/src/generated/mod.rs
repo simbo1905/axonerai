@@ -3,6 +3,8 @@ pub mod assistant;
 pub mod console_entry;
 pub mod error;
 pub mod pong;
+pub mod prompt;
+pub mod provider_models;
 pub mod ready;
 pub mod rename;
 pub mod session_meta;

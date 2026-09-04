@@ -29,6 +29,8 @@
       "*/assets/lineformat.js": ["./web/types/lineformat-glue.d.ts"],
       "/assets/validators.js": ["./web/types/validators-glue.d.ts"],
       "*/assets/validators.js": ["./web/types/validators-glue.d.ts"],
+      "/assets/client.mjs": ["./web/assets/client.mjs"],
+      "*/assets/client.mjs": ["./web/assets/client.mjs"],
       "/src/components/agt-app.js": ["./web/src/components/agt-app.js"],
       "*/src/components/agt-app.js": ["./web/src/components/agt-app.js"],
       "/src/components/agt-console-app.js": ["./web/src/components/agt-console-app.js"],
@@ -38,6 +40,7 @@
     }
   },
   "include": [
+    "web/assets/client.mjs",
     "web/src/**/*",
     "web/test/**/*",
     "web/types/**/*"

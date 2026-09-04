@@ -119,8 +119,6 @@ impl Provider for OpenAIProvider {
             _ => StopReason::Error,
         };
 
-        println!("DEBUG: stop_reason: {:?}\n", &stop_reason);
-
         Ok(CompletionResponse {
             text,
             tool_calls,

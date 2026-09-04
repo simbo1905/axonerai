@@ -49,11 +49,47 @@ test("dispatch with null or missing _type throws TypeError", () => {
   );
 });
 
-test("dispatch with an unknown-but-valid-shaped type and no handler throws", () => {
+test("dispatch with a validator-backed type and no handler throws", () => {
+  // "ready" IS in VALIDATOR_TYPES but is not registered yet — a missing
+  // handler for a validator-backed type is a bug, not data.
   assert.throws(
-    () => dispatch(/** @type {any} */ (deepFreeze({ _type: "nope" }))),
-    /no handler for nope/,
+    () =>
+      dispatch(
+        /** @type {any} */ (
+          deepFreeze({ _type: "ready", version: "1", websocket_path: "/ws" })
+        ),
+      ),
+    /no handler for ready/,
   );
+});
+
+test("dispatch with an unknown _type logs malformed and drops (no handler runs)", () => {
+  const originalError = console.error;
+  /** @type {unknown[][]} */
+  const calls = [];
+  console.error = (...args) => {
+    calls.push(args);
+  };
+  try {
+    /** @type {string[]} */
+    const handled = [];
+    // A handler registered for a known type must NOT fire for an unknown one.
+    registerHandler("pong", (event) => {
+      handled.push(/** @type {PongEvent} */ (event)._type);
+    });
+    const result = dispatch(/** @type {any} */ (deepFreeze({ _type: "nope" })));
+    assert.equal(result, undefined, "unknown _type is dropped");
+    assert.deepEqual(handled, [], "no handler fired");
+    assert.equal(calls.length, 1, "one console.error call");
+    assert.equal(
+      calls[0][0],
+      "[dispatch] malformed/unsupported frame (unknown _type)",
+      "unexpected console.error prefix",
+    );
+    assert.equal(calls[0][1], "nope", "expected _type value logged");
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("register/overwrite/hasHandler semantics", () => {

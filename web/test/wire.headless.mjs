@@ -4,6 +4,7 @@ import {
   validatePong,
   validateAssistant,
   validateError,
+  validateTool_call,
 } from "/generated/validators.mjs";
 import { deepFreeze, parseWireEvent, parseWireEventText } from "/src/wire.mjs";
 
@@ -189,6 +190,42 @@ test("unknown _type logs malformed/unsupported and returns null", () => {
   } finally {
     restore();
   }
+});
+
+test("reconstructed catch-up tool_call with optional abridged flag validates", () => {
+  // The browser's catch-up reconstruction synthesizes partial tool_calls
+  // whose pretty heads ARE truncated; the schema sanctions the flag as an
+  // optional property, so the synthesized partial must validate clean.
+  const partial = {
+    _type: "tool_call",
+    id: null,
+    session_id: "sess_1",
+    tool: "WebSearch",
+    args_pretty: '{"query":"ru',
+    result_pretty: '"https://rust-la',
+    bytes_up: 20,
+    bytes_down: 128,
+    duration_ms: 350,
+    ts: 1700000000000,
+    abridged: true,
+  };
+  assertEqual(validateTool_call(partial).length, 0, "abridged:true accepted");
+  assert(
+    need(parseWireEvent(partial), "abridged tool_call must not be dropped") !==
+      null,
+    "parseWireEvent accepts the synthesized partial",
+  );
+  assertEqual(
+    validateTool_call({ ...partial, abridged: "yes" }).length > 0,
+    true,
+    "non-boolean abridged rejected",
+  );
+  const { abridged: _omitted, ...without } = partial;
+  assertEqual(
+    validateTool_call(without).length,
+    0,
+    "absent abridged accepted (server tool_calls carry no flag)",
+  );
 });
 
 test("assistant with numeric text logs malformed frame and returns null", () => {

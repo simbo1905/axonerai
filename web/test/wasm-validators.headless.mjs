@@ -136,6 +136,36 @@ test("valid tool_call event parses via WASM validator, frozen", () => {
   );
 });
 
+test("reconstructed catch-up tool_call with optional abridged flag validates via WASM", () => {
+  // Schema parity check: the Rust-generated validator must accept the same
+  // optional `abridged` flag the `.mjs` validator accepts (the browser's
+  // catch-up reconstruction synthesizes partial tool_calls with it).
+  const event = need(
+    parseWireEventText(
+      JSON.stringify({
+        _type: "tool_call",
+        id: null,
+        session_id: "sess_1",
+        tool: "Grep",
+        args_pretty: '{"pattern":"ca',
+        result_pretty: '["match one", "match tw',
+        bytes_up: 10,
+        bytes_down: 64,
+        duration_ms: 120,
+        ts: 1700000000000,
+        abridged: true,
+      }),
+    ),
+    "abridged tool_call event should not be dropped by the WASM validator",
+  );
+  assertEqual(event._type, "tool_call", "tool_call _type mismatch");
+  assertEqual(
+    /** @type {any} */ (event).abridged,
+    true,
+    "abridged flag survives the round-trip",
+  );
+});
+
 test("valid ack event parses via WASM validator, frozen", () => {
   const event = need(
     parseWireEventText(

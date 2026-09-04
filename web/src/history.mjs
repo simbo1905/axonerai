@@ -6,9 +6,19 @@
  * before catching up over the line protocol, so a reload/fork gets up to
  * speed without duplicates.
  *
- * Node tests cover only the pure helpers ({@link mergeCatchup},
- * {@link frontierOf}) — the IDB paths run in headless Chrome. No
- * fake-indexeddb dependency.
+ * The READ boundary ({@link getAll}) re-asserts the IO contract: every
+ * stored record is re-validated (JTD) and deep-frozen before it is returned;
+ * a stored record that no longer validates is logged and dropped, never
+ * returned. The pure helpers ({@link mergeCatchup}, {@link frontierOf},
+ * {@link reviveHistoryRecords}) are covered by node tests; the IDB paths run
+ * in headless Chrome. No fake-indexeddb dependency.
+ */
+
+import { deepFreeze, parseWireEvent } from "./wire.mjs";
+import { validatePrompt } from "../generated/validators.mjs";
+
+/**
+ * @typedef {import("./wire.mjs").ChatEvent} ChatEvent
  */
 
 /**
@@ -18,7 +28,7 @@
  * @property {string} sessionId
  * @property {number} ts stamp: the server `_ts` for catch-up records,
  * `Date.now()` at receipt for live events
- * @property {unknown} event the validated frozen event (or the partial
+ * @property {ChatEvent} event the validated frozen event (or the partial
  * tool_call reconstruction)
  */
 
@@ -123,7 +133,81 @@ export async function getFrontier(db, sessionId) {
 }
 
 /**
+ * Revive one stored event at the read boundary: validate → freeze → return,
+ * or log + return `null` for anything that does not validate. `prompt`
+ * records (client-side, persisted alongside server events) validate against
+ * `schemas/prompt.jdt.json`; every other `_type` goes through
+ * {@link parseWireEvent} (the wire validator registry, which logs malformed
+ * frames itself).
+ *
+ * @param {unknown} raw
+ * @returns {ChatEvent | null}
+ */
+function reviveEvent(raw) {
+  if (raw === null || typeof raw !== "object") {
+    console.warn("[history] dropping stored record with non-object event");
+    return null;
+  }
+  const type = /** @type {any} */ (raw)._type;
+  if (type === "prompt") {
+    const errors = validatePrompt(raw);
+    if (errors.length > 0) {
+      console.error("[history] dropping stored prompt record: malformed", errors);
+      return null;
+    }
+    return /** @type {ChatEvent} */ (deepFreeze(raw));
+  }
+  if (typeof type !== "string") {
+    console.warn("[history] dropping stored record without a string _type");
+    return null;
+  }
+  const event = parseWireEvent(raw);
+  if (event === null) {
+    // Unknown _type / validator failure — parseWireEvent already logged it.
+    return null;
+  }
+  return event;
+}
+
+/**
+ * Re-assert the IO contract on records read back from IndexedDB: every
+ * returned record is re-validated and deep-frozen (record AND event); an
+ * invalid stored record is logged and dropped, never returned. Pure: takes
+ * the raw structured-clone records `getAll` reads and returns a new array.
+ *
+ * @param {unknown[]} rawRecords
+ * @returns {HistoryRecord[]}
+ */
+export function reviveHistoryRecords(rawRecords) {
+  /** @type {HistoryRecord[]} */
+  const revived = [];
+  for (const raw of rawRecords) {
+    if (raw === null || typeof raw !== "object") {
+      console.warn("[history] dropping malformed stored record (non-object)");
+      continue;
+    }
+    const record = /** @type {any} */ (raw);
+    if (typeof record.sessionId !== "string" || typeof record.ts !== "number") {
+      console.warn("[history] dropping malformed stored record", record);
+      continue;
+    }
+    const event = reviveEvent(record.event);
+    if (event === null) continue;
+    revived.push(
+      deepFreeze({
+        sessionId: record.sessionId,
+        ts: record.ts,
+        event,
+      }),
+    );
+  }
+  return revived;
+}
+
+/**
  * All records for `sessionId` (via the `sessionId` index), in key order.
+ * Read-boundary rule: every record is re-validated and deep-frozen here —
+ * invalid stored records are logged and dropped, never returned.
  *
  * @param {IDBDatabase} db
  * @param {string} sessionId
@@ -135,7 +219,7 @@ export function getAll(db, sessionId) {
     const index = tx.objectStore("events").index("sessionId");
     const request = index.getAll(sessionId);
     request.onsuccess = () =>
-      resolve(/** @type {HistoryRecord[]} */ (request.result));
+      resolve(reviveHistoryRecords(/** @type {unknown[]} */ (request.result)));
     request.onerror = () => reject(request.error ?? new Error("getAll failed"));
   });
 }

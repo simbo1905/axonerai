@@ -69,6 +69,12 @@ import {
  * are the abridged pretty-printed JSON (metadata first, payload last on the
  * wire, so a truncated frame keeps usable metadata).
  *
+ * The optional `abridged` flag is schema-sanctioned
+ * (`schemas/tool_call.jdt.json` `optionalProperties`): the browser's
+ * catch-up reconstruction synthesizes partial `tool_call`s whose pretty
+ * heads ARE truncated, and marks them so the renderer can show an
+ * unconditional ellipsis on the summary row.
+ *
  * @typedef {object} ToolCallEvent
  * @property {"tool_call"} _type
  * @property {string | null} id
@@ -80,6 +86,7 @@ import {
  * @property {number} bytes_down
  * @property {number} duration_ms
  * @property {number} ts
+ * @property {boolean} [abridged] true only on catch-up reconstructions
  */
 
 /**
