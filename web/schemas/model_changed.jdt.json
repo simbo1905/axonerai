@@ -1,0 +1,17 @@
+{
+  "properties": {
+    "_type": {
+      "enum": ["model_changed"]
+    },
+    "service": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

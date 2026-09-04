@@ -101,3 +101,12 @@ export function validatePrompt(instance: any): ValidationError[];
  * @returns {ValidationError[]}
  */
 export function validateProvider_models(instance: any): ValidationError[];
+
+/**
+ * Validate a UI-private `model_changed` event against its schema
+ * (`web/schemas/model_changed.jdt.json` — the model domain client's
+ * BroadcastChannel('axonerai') + window-echo contract, D38).
+ * @param {any} instance
+ * @returns {ValidationError[]}
+ */
+export function validateModel_changed(instance: any): ValidationError[];

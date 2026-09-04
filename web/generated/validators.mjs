@@ -10,3 +10,4 @@ export { validate as validateRename } from "./rename.mjs";
 export { validate as validateSession_meta } from "./session_meta.mjs";
 export { validate as validateSession_rename } from "./session_rename.mjs";
 export { validate as validateTool_call } from "./tool_call.mjs";
+export { validate as validateModel_changed } from "./model_changed.mjs";

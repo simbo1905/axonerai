@@ -1,9 +1,15 @@
 JTD_CODEGEN ?= mise exec -- jtd-codegen
 TSC         ?= tsc
 SCHEMA_DIR  := schemas
+# WEB-LOCAL UI-event schemas (NOT server wire events): generated into the
+# same web/generated/ barrel but kept out of schemas/*.jdt.json so the
+# wasm-validators (server wire) target never sees them.
+WEB_SCHEMA_DIR := web/schemas
 OUT_DIR     := web/generated
 SCHEMAS     := $(wildcard $(SCHEMA_DIR)/*.jdt.json)
-VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS))
+WEB_SCHEMAS := $(wildcard $(WEB_SCHEMA_DIR)/*.jdt.json)
+VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS)) \
+               $(patsubst $(WEB_SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(WEB_SCHEMAS))
 
 .PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat wasm-validators oneshot
 
@@ -27,6 +33,13 @@ check-types:
 validators: $(VALIDATORS) $(OUT_DIR)/validators.mjs
 
 $(OUT_DIR)/%.mjs: $(SCHEMA_DIR)/%.jdt.json
+	@mkdir -p $(OUT_DIR)
+	$(JTD_CODEGEN) --target js $< > $@
+
+# Same output pattern for the WEB-LOCAL UI-event schemas. GNU make picks
+# this rule for a web schema because the server-schema prerequisite does
+# not exist for it (and vice versa).
+$(OUT_DIR)/%.mjs: $(WEB_SCHEMA_DIR)/%.jdt.json
 	@mkdir -p $(OUT_DIR)
 	$(JTD_CODEGEN) --target js $< > $@
 
