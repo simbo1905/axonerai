@@ -118,3 +118,21 @@ await test("abridged: dangling comma dropped, nested brackets closed", async () 
 // @ts-ignore - ambient declaration in web/types/global.d.ts
 window.__PRETTY_TEST_RESULTS__ = { pass, fail, details };
 document.title = "pretty-tests-done";
+// Flush one macrotask before the summary so headless drivers that attach
+// their console listener at load-end still see it.
+await new Promise((resolve) => setTimeout(resolve, 0));
+// Mirror the PASS/FAIL summary into the DOM as well: the result stays
+// observable without a console listener.
+{
+  const summaryEl = document.createElement("pre");
+  summaryEl.id = "pretty-tests-summary";
+  summaryEl.textContent = `[pretty-tests] pass=${pass} fail=${fail}`;
+  document.body.append(summaryEl);
+}
+console.log(
+  `[pretty-tests] pass=${pass} fail=${fail}` +
+    details
+      .filter((d) => !d.ok)
+      .map((d) => `\n[pretty-tests] FAIL ${d.name}: ${d.error}`)
+      .join(""),
+);

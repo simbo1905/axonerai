@@ -397,6 +397,215 @@ await test("every rendered event is the frozen object held in app state", () => 
   }
 });
 
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+await test("Enter sends the prompt and clears the box; Shift+Enter does not send", async () => {
+  const composer = composerEl();
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    composer.querySelector("textarea")
+  );
+  await waitFor(
+    () => !textarea.disabled,
+    "composer enabled before keyboard test",
+  );
+
+  // Enter (no shift) sends the chat.
+  const before = renderedMsgs().filter((m) => m.event._type === "prompt").length;
+  textarea.focus();
+  textarea.value = "sent by Enter key";
+  textarea.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+  );
+  await waitFor(
+    () =>
+      renderedMsgs().filter((m) => m.event._type === "prompt").length ===
+      before + 1,
+    "prompt bubble sent by Enter",
+  );
+  assertEqual(textarea.value, "", "input cleared after Enter send");
+  await waitFor(() => !textarea.disabled, "composer re-enabled after reply");
+
+  // Shift+Enter keeps the text in the box and never dispatches a send.
+  const beforeShift = renderedMsgs().filter((m) => m.event._type === "prompt").length;
+  textarea.value = "line one";
+  textarea.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Enter",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await tick();
+  assertEqual(
+    renderedMsgs().filter((m) => m.event._type === "prompt").length,
+    beforeShift,
+    "Shift+Enter must not send the prompt",
+  );
+  assertEqual(textarea.value, "line one", "text kept in the box on Shift+Enter");
+  textarea.value = "";
+});
+
+await test("footer status bar renders Chat · model provider · think off and K (p%)", async () => {
+  const panel = need(
+    /** @type {HTMLElement | null} */ (document.querySelector("agt-panel")),
+    "panel missing",
+  );
+  const shadow = need(panel.shadowRoot, "panel shadow root missing");
+  await waitFor(() => {
+    const left = shadow.querySelector(".agt-p-footer-left");
+    return left !== null && (left.textContent ?? "").length > 0;
+  }, "footer left rendered");
+  const left = shadow.querySelector(".agt-p-footer-left");
+  const right = shadow.querySelector(".agt-p-footer-right");
+  assertEqual(
+    left?.textContent,
+    "Chat · zai-glm-5-2 mistral · think off",
+    "footer left",
+  );
+  assertEqual(right?.textContent, "12.3K (38%)", "footer right context use");
+});
+
+await test("status pill renders Connecting and Error states; onError re-enables via onOpen", async () => {
+  // Injection-style: a fresh agt-status element driven directly (single page,
+  // no second connection) — the boot itself starts in the connecting state.
+  const fresh = /** @type {HTMLElement & { status: { state: "connecting" } }} */ (
+    document.createElement("agt-status")
+  );
+  fresh.status = { state: "connecting" };
+  const freshPill = need(
+    /** @type {HTMLElement | null} */ (fresh.querySelector(".pill")),
+    "fresh pill missing",
+  );
+  assertEqual(freshPill.textContent, "Connecting…", "connecting label");
+  assert(
+    freshPill.classList.contains("pill-connecting"),
+    `expected pill-connecting, got ${freshPill.className}`,
+  );
+  fresh.remove();
+
+  const pill = () => document.querySelector("agt-status .pill");
+  stub.handlers.onError(new Event("error"));
+  const errorPill = /** @type {HTMLElement} */ (
+    await waitFor(() => {
+      const el = pill();
+      return el?.classList.contains("pill-error") ? el : null;
+    }, "error pill").then((el) => need(el, "error pill not rendered"))
+  );
+  assertEqual(errorPill.textContent, "Error", "error label");
+
+  // Recovery: onOpen flips back to connected (the app has no dedicated
+  // "reconnecting" state — states are connecting/connected/disconnected/error).
+  stub.handlers.onOpen();
+  await waitFor(
+    () => pill()?.classList.contains("pill-connected") === true,
+    "connected pill restored",
+  );
+  await waitFor(
+    () => !composerEl().querySelector("textarea").disabled,
+    "composer re-enabled after recovery",
+  );
+});
+
+await test("tool_call lines: hidden by default, /verbose reveals them, expand pretty-prints, /verbose hides again", async () => {
+  stub.emit({
+    _type: "tool_call",
+    id: null,
+    session_id: "test",
+    tool: "WebSearch",
+    args_pretty: '{"query":"axonerai"}',
+    result_pretty: '[{"title":"first hit"}]',
+    bytes_up: 20,
+    bytes_down: 128,
+    duration_ms: 350,
+    ts: 1700000000000,
+  });
+  assert(
+    document.querySelector("agt-tool-line") === null,
+    "tool line must be hidden while verbose is off",
+  );
+
+  // Toggle /verbose through the composer (the real control-plane path).
+  const composer = composerEl();
+  const textarea = /** @type {HTMLTextAreaElement} */ (
+    composer.querySelector("textarea")
+  );
+  textarea.focus();
+  textarea.value = "/verbose";
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+  );
+  await waitFor(
+    () => /** @type {any} */ (app).verbose === true,
+    "verbose flag on",
+  );
+  const line = /** @type {HTMLElement & { event: any, expanded: boolean }} */ (
+    await waitFor(
+      () => document.querySelector("agt-tool-line"),
+      "tool line rendered",
+    ).then((el) => need(el, "tool line not rendered"))
+  );
+  const summary = need(
+    line.shadowRoot?.querySelector(".summary"),
+    "tool line summary missing",
+  );
+  assert(
+    summary.textContent?.includes("WebSearch") === true,
+    `summary should name the tool, got ${JSON.stringify(summary.textContent)}`,
+  );
+  assert(
+    summary.textContent?.includes("↑20B") === true &&
+      summary.textContent?.includes("↓128B") === true,
+    `summary should carry the byte counts, got ${JSON.stringify(summary.textContent)}`,
+  );
+  assert(
+    summary.textContent?.includes("350ms") === true,
+    `summary should carry the duration, got ${JSON.stringify(summary.textContent)}`,
+  );
+
+  // Expand: lazy pretty-print of the payload heads via the WASM printer.
+  /** @type {HTMLElement} */ (
+    need(line.shadowRoot?.querySelector(".line"), "tool line button missing")
+  ).click();
+  await waitFor(() => line.expanded === true, "tool line expanded");
+  await waitFor(() => {
+    const pre = line.shadowRoot?.querySelector('pre[data-part="args"]');
+    return (pre?.textContent ?? "").includes('"query"');
+  }, "args payload pretty-printed");
+  const resultPre = line.shadowRoot?.querySelector('pre[data-part="result"]');
+  assert(
+    (resultPre?.textContent ?? "").length > 0,
+    "result payload rendered",
+  );
+  assertEqual(
+    line.shadowRoot?.querySelector(".tri")?.textContent,
+    "▾",
+    "triangle flips when expanded",
+  );
+  assertEqual(
+    /** @type {HTMLElement} */ (line.shadowRoot?.querySelector(".payload")).hidden,
+    false,
+    "payload visible when expanded",
+  );
+
+  // Toggle /verbose off: the stored tool_call disappears from the log again.
+  textarea.focus();
+  textarea.value = "/verbose";
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+  );
+  await waitFor(
+    () => /** @type {any} */ (app).verbose === false,
+    "verbose flag off",
+  );
+  await waitFor(
+    () => document.querySelector("agt-tool-line") === null,
+    "tool line hidden again",
+  );
+});
+
 await test("disconnect disables the composer; reconnect re-enables it", async () => {
   const composer = composerEl();
   stub.handlers.onClose();
@@ -423,6 +632,14 @@ await test("disconnect disables the composer; reconnect re-enables it", async ()
 
 window.__UI_TEST_RESULTS__ = { pass, fail, details };
 document.title = "ui-tests-done";
+// Mirror the PASS/FAIL summary into the DOM: the result stays observable
+// without a console listener.
+{
+  const summaryEl = document.createElement("pre");
+  summaryEl.id = "ui-tests-summary";
+  summaryEl.textContent = `[ui-tests] pass=${pass} fail=${fail}`;
+  document.body.append(summaryEl);
+}
 console.log(
   `[ui-tests] pass=${pass} fail=${fail}` +
     details

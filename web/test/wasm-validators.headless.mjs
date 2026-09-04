@@ -282,3 +282,21 @@ test("parseWireEventText on invalid JSON logs and returns null", () => {
 
 window.__WASM_VALIDATORS_TEST_RESULTS__ = { pass, fail, details };
 document.title = "wasm-validators-tests-done";
+// Flush one macrotask before the summary so headless drivers that attach
+// their console listener at load-end still see it.
+await new Promise((resolve) => setTimeout(resolve, 0));
+// Mirror the PASS/FAIL summary into the DOM as well: the result stays
+// observable without a console listener.
+{
+  const summaryEl = document.createElement("pre");
+  summaryEl.id = "wasm-validators-tests-summary";
+  summaryEl.textContent = `[wasm-validators-tests] pass=${pass} fail=${fail}`;
+  document.body.append(summaryEl);
+}
+console.log(
+  `[wasm-validators-tests] pass=${pass} fail=${fail}` +
+    details
+      .filter((d) => !d.ok)
+      .map((d) => `\n[wasm-validators-tests] FAIL ${d.name}: ${d.error}`)
+      .join(""),
+);

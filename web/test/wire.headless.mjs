@@ -304,3 +304,19 @@ test("parseWireEvent deep-freezes nested content", () => {
 
 window.__WIRE_TEST_RESULTS__ = { pass, fail, details };
 document.title = "wire-tests-done";
+// Flush one macrotask before the summary so headless drivers that attach
+// their console listener at load-end still see it (the suite is synchronous).
+await new Promise((resolve) => setTimeout(resolve, 0));
+// Mirror the PASS/FAIL summary into the DOM: the runner page is otherwise
+// empty, which makes the result observable without a console listener too.
+const summaryEl = document.createElement("pre");
+summaryEl.id = "wire-tests-summary";
+summaryEl.textContent = `[wire-tests] pass=${pass} fail=${fail}`;
+document.body.append(summaryEl);
+console.log(
+  `[wire-tests] pass=${pass} fail=${fail}` +
+    details
+      .filter((d) => !d.ok)
+      .map((d) => `\n[wire-tests] FAIL ${d.name}: ${d.error}`)
+      .join(""),
+);

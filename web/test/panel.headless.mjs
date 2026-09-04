@@ -252,6 +252,9 @@ let onEvent = null;
 /** @type {string[]} */
 const renames = [];
 
+/** @type {string[]} */
+const prompts = [];
+
 /**
  * Validate + freeze a control-plane frame the wire.mjs registry does not
  * cover yet, then deliver it like client.mjs would.
@@ -299,13 +302,14 @@ window.AgtClient = {
       onClose: opts.onClose ?? (() => {}),
       onError: opts.onError ?? (() => {}),
     };
-    window.__PANEL_STUB__ = {
+    window.__PANEL_STUB__ = /** @type {any} */ ({
       emit,
       renames,
+      prompts,
       postCalls,
       mcpPosts,
       modelPosts,
-    };
+    });
     captured.onOpen();
     await Promise.resolve();
     emit({ _type: "ready", version: "9.9.9-test", websocket_path: "/ws" });
@@ -317,7 +321,13 @@ window.AgtClient = {
     });
     return { dispose() {} };
   },
-  async sendPrompt() {
+  /**
+   * @param {string} text
+   * @param {string} [id]
+   */
+  async sendPrompt(text, id) {
+    prompts.push(text);
+    void id;
     return "ok";
   },
   /** @param {string} title */
@@ -444,12 +454,36 @@ async function type(text) {
   await tick();
 }
 
-/** @param {string} key */
-async function pressKey(key) {
+/**
+ * @param {string} key
+ * @param {{ shiftKey?: boolean }} [modifiers]
+ */
+async function pressKey(key, modifiers = {}) {
   ta().dispatchEvent(
-    new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+    new KeyboardEvent("keydown", {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ...modifiers,
+    }),
   );
   await tick();
+}
+
+/** Rendered prompt bubbles (chat sends), newest last. */
+function promptCount() {
+  return [...document.querySelectorAll("agt-msg")].filter(
+    (m) => /** @type {any} */ (m).event?._type === "prompt",
+  ).length;
+}
+
+/** The last echoed command line in the panel's Slash log. */
+function lastEcho() {
+  const lines = [
+    ...shadow().querySelectorAll(".agt-p-slash-log .agt-p-line"),
+  ];
+  const last = lines[lines.length - 1];
+  return last ? last.textContent ?? "" : "";
 }
 
 // ----------------------------------------------------------------- tests
@@ -858,10 +892,106 @@ await test("app snapshot is deep-frozen", () => {
   assert(Object.isFrozen(snapshot.session), "snapshot.session not frozen");
 });
 
+await test("typo'd prefix /m resolves through the menu to /models with a canonical echo", async () => {
+  await type("/m");
+  const menu = menuEl();
+  assert(menu.hidden === false, "menu open for the /m prefix");
+  const options = [...menu.querySelectorAll("[role=option]")];
+  assertEqual(options.length, 1, "only /models matches the /m prefix");
+  assertEqual(
+    /** @type {HTMLElement} */ (options[0]).dataset.name,
+    "models",
+    "matched command is models",
+  );
+  await pressKey("Enter");
+  await waitFor(() => isCollapsed("Models") === false, "Models tree opened");
+  assertEqual(ta().value, "", "input cleared");
+  await waitFor(() => lastEcho() === "/models", "canonical /models echo");
+  // The menu selection RESOLVES the typo: the echoed line is the canonical
+  // command text, never the raw "/m" prefix that would fail to parse.
+  assertEqual(lastEcho(), "/models", "echo must be the resolved command");
+  assertEqual(
+    /** @type {any} */ (app).snapshot?.model,
+    "mistral-medium-latest",
+    "models tree still shows the swapped roster (no unintended re-run)",
+  );
+});
+
+await test("Enter sends chat text to the model path; Shift+Enter keeps it without sending", async () => {
+  await waitFor(
+    () => !ta().disabled,
+    "composer enabled before the keyboard test",
+  );
+  const before = promptCount();
+
+  // Enter (menu closed, non-slash input) sends the chat.
+  await type("hello from the Enter key");
+  await pressKey("Enter");
+  await waitFor(() => promptCount() === before + 1, "prompt bubble rendered");
+  assertEqual(prompts.length, 1, "client got exactly one sendPrompt");
+  assertEqual(prompts[0], "hello from the Enter key", "sent text");
+  assertEqual(ta().value, "", "input cleared after Enter send");
+  await waitFor(() => !ta().disabled, "composer re-enabled after send");
+
+  // Shift+Enter never dispatches the send.
+  const beforeShift = promptCount();
+  await type("two lines pending");
+  await pressKey("Enter", { shiftKey: true });
+  await tick();
+  assertEqual(promptCount(), beforeShift, "Shift+Enter must not send");
+  assertEqual(prompts.length, 1, "no extra sendPrompt for Shift+Enter");
+  assertEqual(ta().value, "two lines pending", "text kept in the box");
+  await type("");
+});
+
+await test("/console opens the popup via window.open (stubbed + asserted); a blocked popup falls back to a tab", async () => {
+  const originalOpen = window.open;
+  /** @type {Array<{ url: any, target: any, features: any }>} */
+  const opens = [];
+  window.open = /** @type {typeof window.open} */ (
+    /** @type {unknown} */ ((/** @type {any} */ url, /** @type {any} */ target, /** @type {any} */ features) => {
+      opens.push({ url, target, features });
+      // First call succeeds (popup), later calls simulate a blocked popup.
+      return opens.length === 1 ? /** @type {any} */ ({}) : null;
+    })
+  );
+  try {
+    await type("/console");
+    await pressKey("Enter");
+    await waitFor(() => opens.length >= 1, "window.open called");
+    assertEqual(opens[0].url, "/console.html", "popup url");
+    assertEqual(opens[0].target, "agt-console", "popup target");
+    assertEqual(
+      opens[0].features,
+      "popup,width=920,height=680",
+      "popup features",
+    );
+    assertEqual(opens.length, 1, "no fallback while the popup succeeds");
+    await waitFor(() => lastEcho() === "/console", "invocation echo");
+
+    // Blocked popup: the composer run falls back to a regular tab.
+    await type("/console");
+    await pressKey("Enter");
+    await waitFor(() => opens.length === 3, "fallback open after blocked popup");
+    assertEqual(opens[2].url, "/console.html", "fallback url");
+    assertEqual(opens[2].target, "_blank", "fallback target");
+  } finally {
+    window.open = originalOpen;
+  }
+});
+
 // ---------------------------------------------------------------- results
 
 window.__PANEL_TEST_RESULTS__ = { pass, fail, details };
 document.title = "panel-tests-done";
+// Mirror the PASS/FAIL summary into the DOM: the result stays observable
+// without a console listener.
+{
+  const summaryEl = document.createElement("pre");
+  summaryEl.id = "panel-tests-summary";
+  summaryEl.textContent = `[panel-tests] pass=${pass} fail=${fail}`;
+  document.body.append(summaryEl);
+}
 console.log(
   `[panel-tests] pass=${pass} fail=${fail}` +
     details
