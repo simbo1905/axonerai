@@ -5,6 +5,7 @@ import { createStore } from "../store.mjs";
 import { COMMANDS, parseInput } from "../commands.mjs";
 import { contextWindowFor, fetchProviderModels, modelsForProvider } from "../models.mjs";
 import { installConsoleBus } from "../console-bus.mjs";
+import { mcpDisabledKey, parseDisabledServers } from "../mcp-prefs.mjs";
 import {
   extractToolCallMeta,
   initLineformat,
@@ -80,6 +81,12 @@ export class AgtApp extends HTMLElement {
   #sessionId = null;
   /** @type {Promise<IDBDatabase> | null} */
   #historyDb = null;
+  /**
+   * Repo folder whose stored MCP prefs were already applied this boot
+   * (item48); also the folder scope used when persisting toggles.
+   * @type {string | null}
+   */
+  #mcpPrefsRepo = null;
 
   /** Frozen chat-state snapshot (server events + prompt records). */
   get state() {
@@ -148,6 +155,16 @@ export class AgtApp extends HTMLElement {
           typeof detail.enabled === "boolean"
         ) {
           this.#toggleTool(detail.name, detail.enabled);
+        }
+      });
+      panel.addEventListener("agt-toggle-mcp", (e) => {
+        const detail = /** @type {CustomEvent} */ (e).detail;
+        if (
+          detail &&
+          typeof detail.name === "string" &&
+          typeof detail.enabled === "boolean"
+        ) {
+          this.#toggleMcp(detail.name, detail.enabled);
         }
       });
       panel.addEventListener("agt-select-model", (e) => {
@@ -450,6 +467,16 @@ export class AgtApp extends HTMLElement {
     if (snapshot && !this.#sessionId) {
       this.#sessionId = snapshot.session?.id ?? null;
     }
+    // item48: on the FIRST successful snapshot, apply this folder's stored
+    // MCP toggle preference so the SESSION matches the browser's persisted
+    // state (the server keeps no MCP toggle across restarts).
+    if (snapshot && this.#mcpPrefsRepo === null) {
+      const repoPath = snapshot.repo?.path;
+      if (typeof repoPath === "string" && repoPath.length > 0) {
+        this.#mcpPrefsRepo = repoPath;
+        this.#applyStoredMcpPrefs(repoPath);
+      }
+    }
     this.#panel?.setState(this.#snapshot);
     return this.#snapshot;
   }
@@ -644,6 +671,77 @@ export class AgtApp extends HTMLElement {
       );
     }
     await this.#fetchState();
+  }
+
+  /**
+   * Flip an MCP server (item48): POST /api/mcp so the server suppresses the
+   * server's tools for this session, persist the preference under this
+   * folder's localStorage key, then refetch /api/state so the panel row
+   * converges with the server (reverting the optimistic row on failure —
+   * including the localStorage write, which only happens on success).
+   *
+   * @param {string} server
+   * @param {boolean} enabled
+   */
+  async #toggleMcp(server, enabled) {
+    try {
+      const res = await fetch("/api/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server, enabled }),
+      });
+      if (!res.ok) {
+        throw new Error(`POST /api/mcp failed (${res.status})`);
+      }
+      this.#storeMcpDisabled(server, enabled);
+    } catch (error) {
+      console.error(
+        `[slash] error: MCP toggle ${server} failed — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    await this.#fetchState();
+  }
+
+  /**
+   * Persist one MCP toggle under this folder's localStorage key
+   * (`agt.mcp-disabled:<repo-path>` → JSON array of disabled server names;
+   * see web/src/mcp-prefs.mjs). No-ops when the folder is unknown.
+   *
+   * @param {string} server
+   * @param {boolean} enabled
+   */
+  #storeMcpDisabled(server, enabled) {
+    const repoPath = this.#mcpPrefsRepo ?? this.#snapshot?.repo?.path ?? null;
+    if (typeof repoPath !== "string" || repoPath.length === 0) return;
+    const key = mcpDisabledKey(repoPath);
+    const current = parseDisabledServers(localStorage.getItem(key)) ?? [];
+    const next = enabled
+      ? current.filter((name) => name !== server)
+      : [...new Set([...current, server])];
+    localStorage.setItem(key, JSON.stringify(next));
+  }
+
+  /**
+   * Boot-time MCP preference application (item48): read this folder's
+   * stored disabled-server list and POST each to /api/mcp so the SESSION
+   * matches the user's persisted preference. Invalid stored payloads are
+   * logged and dropped (boundary rule); the list is only re-read once per
+   * boot.
+   *
+   * @param {string} repoPath
+   */
+  #applyStoredMcpPrefs(repoPath) {
+    const raw = localStorage.getItem(mcpDisabledKey(repoPath));
+    const disabled = parseDisabledServers(raw);
+    if (disabled === null) {
+      console.warn("[mcp] ignoring stored MCP prefs: invalid payload");
+      return;
+    }
+    for (const server of disabled) {
+      void this.#toggleMcp(server, false);
+    }
   }
 
   /**

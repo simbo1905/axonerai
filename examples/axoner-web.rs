@@ -449,6 +449,7 @@ async fn serve(
         .route("/api/state", get(api_state))
         .route("/api/models", get(api_models))
         .route("/api/tools", post(api_tools_toggle))
+        .route("/api/mcp", post(api_mcp_toggle))
         .route("/api/model", post(api_model_swap))
         .route("/openapi.yaml", get(openapi_yaml))
         .nest_service("/assets", assets_service)
@@ -614,6 +615,10 @@ struct ContextSnapshot {
 struct McpServerInfo {
     name: String,
     status: String,
+    /// Whether the server's tools are currently exposed to the model
+    /// (item48: the panel's per-server toggle; false when the server's
+    /// tools are all suppressed via POST /api/mcp).
+    enabled: bool,
 }
 
 /// The control-plane snapshot the UI panel renders. Field order matches the
@@ -687,29 +692,28 @@ fn state_snapshot(state: &AppState) -> StateSnapshot {
             context_window: state.models_cfg.context_window(&runtime.model),
         },
         tools: state.registry.list_tools_info(),
-        mcp: mcp_servers(),
+        mcp: mcp_servers(&state.registry),
         lsp: vec![],
         todo: serde_json::Value::Null,
     }
 }
 
-/// Registered (fake) MCP servers: `tavily` / `context7` are "connected" iff
-/// their API keys are present; there is no MCP host process.
-fn mcp_servers() -> Vec<McpServerInfo> {
-    let mut servers = Vec::new();
-    if std::env::var("TAVILY_API_KEY").is_ok() {
-        servers.push(McpServerInfo {
-            name: "tavily".to_string(),
+/// Registered (fake) MCP servers, driven by the shared registry: a server
+/// is listed exactly when it has registered `ToolSource::Mcp` facade tools
+/// (in `build_registry` that coincides with its API key being present);
+/// there is no MCP host process. `enabled` mirrors the registry's
+/// per-server suppression (item48): false when POST /api/mcp has
+/// suppressed all of the server's tools.
+fn mcp_servers(registry: &ToolRegistry) -> Vec<McpServerInfo> {
+    registry
+        .mcp_servers()
+        .into_iter()
+        .map(|name| McpServerInfo {
             status: "connected".to_string(),
-        });
-    }
-    if axonerai::tools::context7_mcp::is_configured() {
-        servers.push(McpServerInfo {
-            name: "context7".to_string(),
-            status: "connected".to_string(),
-        });
-    }
-    servers
+            enabled: registry.mcp_server_enabled(&name),
+            name,
+        })
+        .collect()
 }
 
 /// Current git branch, parsed straight from `.git/HEAD` — NO subprocess.
@@ -821,6 +825,47 @@ async fn api_tools_toggle(
     if let Err(e) = settings.save() {
         warn!("failed to persist settings: {e}");
     }
+
+    Json(serde_json::json!({"ok": true})).into_response()
+}
+
+// --- MCP server toggle (POST /api/mcp) --------------------------------------
+
+#[derive(serde::Deserialize)]
+struct McpToggleBody {
+    server: String,
+    enabled: bool,
+}
+
+/// POST /api/mcp `{"server": "<name>", "enabled": bool}` — the panel-level
+/// MCP toggle (item48). Reuses the proven suppression registry: it applies
+/// per-tool suppression to EVERY `ToolSource::Mcp` tool reporting that
+/// server name, so a disabled server's tools are hidden from the model and
+/// error on execution for this session. Unknown server → 400 (same error
+/// shape as /api/tools); the accepted set is exactly the servers with
+/// registered facade tools (`registry.mcp_servers()`).
+///
+/// Restart semantics: unlike /api/tools, MCP toggles are NOT persisted to
+/// settings.jsonc — the BROWSER is the durable store (per-folder
+/// localStorage, see web/src/mcp-prefs.mjs) and re-applies the stored
+/// disabled servers by POSTing each one on boot. A server restart therefore
+/// re-exposes all MCP tools until the browser reconnects and re-applies its
+/// preference.
+async fn api_mcp_toggle(
+    State(state): State<AppState>,
+    Json(body): Json<McpToggleBody>,
+) -> Response {
+    if !state.registry.mcp_servers().contains(&body.server) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"ok": false, "error": "unknown mcp server"})),
+        )
+            .into_response();
+    }
+
+    state
+        .registry
+        .set_mcp_suppressed(&body.server, body.enabled);
 
     Json(serde_json::json!({"ok": true})).into_response()
 }
@@ -1488,6 +1533,12 @@ mod tests {
     /// the roster's second model only — mirroring "config ADDS to the
     /// fallbacks".
     fn test_state() -> AppState {
+        test_state_with(build_registry())
+    }
+
+    /// [`test_state`] with an explicit registry (item48 tests inject one
+    /// with the MCP facade tools registered regardless of API-key env).
+    fn test_state_with(registry: ToolRegistry) -> AppState {
         let dir = std::env::temp_dir().join(format!("axoner-web-test-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         let session_id = uuid::Uuid::now_v7().to_string();
@@ -1527,7 +1578,6 @@ mod tests {
             "mistral",
         ));
 
-        let registry = build_registry();
         let agent = build_agent_from_config(
             &config,
             "mistral",
@@ -1734,5 +1784,115 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(state.runtime.read().unwrap().model, "mistral-large-latest");
+    }
+
+    // --- item48: MCP server toggle (POST /api/mcp) ---------------------------
+
+    /// Registry with the MCP facade tools registered regardless of the
+    /// API-key environment (the /api/mcp tests must be deterministic).
+    fn mcp_test_registry() -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(Calculator));
+        registry.register(Box::new(TavilyMcpSearch::new()));
+        registry.register(Box::new(TavilyMcpExtract::new()));
+        registry.register(Box::new(Context7McpResolveLibraryId::new()));
+        registry.register(Box::new(Context7McpGetLibraryDocs::new()));
+        registry
+    }
+
+    /// POST /api/mcp disable suppresses ALL of that server's tools: the
+    /// LLM-facing list shrinks (an agent run would not see them) and
+    /// /api/state reports the server as disabled for the panel.
+    #[tokio::test]
+    async fn api_mcp_toggle_disable_suppresses_server_tools() {
+        let state = test_state_with(mcp_test_registry());
+        assert_eq!(state.registry.get_all_for_llm().len(), 5);
+
+        let response = api_mcp_toggle(
+            State(state.clone()),
+            Json(McpToggleBody {
+                server: "tavily".to_string(),
+                enabled: false,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let for_llm: Vec<String> = state
+            .registry
+            .get_all_for_llm()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(for_llm.len(), 3, "both tavily facade tools disappear");
+        assert!(!for_llm.contains(&"tavily_search".to_string()));
+        assert!(!for_llm.contains(&"tavily_extract".to_string()));
+        assert!(for_llm.contains(&"context7_resolve_library_id".to_string()));
+        assert!(for_llm.contains(&"context7_get_library_docs".to_string()));
+
+        // /api/state exposes the per-server toggle state for the panel.
+        let snapshot = state_snapshot(&state);
+        let by_name = |name: &str| {
+            snapshot
+                .mcp
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("server {name} missing from snapshot"))
+        };
+        assert!(!by_name("tavily").enabled);
+        assert!(by_name("context7").enabled);
+    }
+
+    /// POST /api/mcp re-enable restores the server's tools.
+    #[tokio::test]
+    async fn api_mcp_toggle_reenable_restores_server_tools() {
+        let state = test_state_with(mcp_test_registry());
+        for enabled in [false, true] {
+            let response = api_mcp_toggle(
+                State(state.clone()),
+                Json(McpToggleBody {
+                    server: "tavily".to_string(),
+                    enabled,
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        assert_eq!(state.registry.get_all_for_llm().len(), 5);
+        let snapshot = state_snapshot(&state);
+        let tavily = snapshot
+            .mcp
+            .iter()
+            .find(|m| m.name == "tavily")
+            .expect("tavily in snapshot");
+        assert!(tavily.enabled, "re-enabled server reported enabled");
+    }
+
+    /// Unknown server → 400 + error body; suppression state untouched.
+    #[tokio::test]
+    async fn api_mcp_toggle_unknown_server_is_400() {
+        let state = test_state_with(mcp_test_registry());
+        let response = api_mcp_toggle(
+            State(state.clone()),
+            Json(McpToggleBody {
+                server: "github".to_string(),
+                enabled: false,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"], "unknown mcp server");
+
+        assert_eq!(state.registry.get_all_for_llm().len(), 5);
+        assert!(
+            state_snapshot(&state).mcp.iter().all(|m| m.enabled),
+            "no server was suppressed"
+        );
     }
 }

@@ -196,6 +196,22 @@ window.fetch = /** @type {typeof window.fetch} */ (async (input, init) => {
       headers: { "Content-Type": "application/json" },
     });
   }
+  if (url === "/api/mcp" && init && init.method === "POST") {
+    // item48: the browser boot may re-apply stored MCP toggle prefs (the
+    // panel headless suite seeds them on this origin) — emulate the
+    // server-side per-server suppression in the fixture.
+    const body = /** @type {{ server: string, enabled: boolean }} */ (
+      JSON.parse(String(init.body))
+    );
+    const server = /** @type {{ name: string, enabled: boolean } | undefined} */ (
+      stateFixture.mcp?.find((/** @type {{ name: string }} */ m) => m.name === body.server)
+    );
+    if (server) server.enabled = body.enabled;
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
   return realFetch(/** @type {RequestInfo} */ (input), init);
 });
 
@@ -407,3 +423,10 @@ await test("disconnect disables the composer; reconnect re-enables it", async ()
 
 window.__UI_TEST_RESULTS__ = { pass, fail, details };
 document.title = "ui-tests-done";
+console.log(
+  `[ui-tests] pass=${pass} fail=${fail}` +
+    details
+      .filter((d) => !d.ok)
+      .map((d) => `\n[ui-tests] FAIL ${d.name}: ${d.error}`)
+      .join(""),
+);

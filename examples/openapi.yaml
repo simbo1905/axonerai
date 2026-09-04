@@ -19,12 +19,14 @@ paths:
       description: >
         Snapshot of the running server: active provider/model, current
         session, repo info, approximate context size, tool registry with
-        on/off state, and registered MCP servers. `mcp` lists `tavily` as
-        connected when TAVILY_API_KEY is set; `lsp` is a placeholder (always
-        empty) and `todo` is a placeholder (always null). Context tokens are
-        a bytes/4 estimate over the JSON serialization of the session's
-        provider messages (the per-session agent-state file, system prompt
-        included when loaded); WS protocol frames are excluded entirely.
+        on/off state, and registered MCP servers. `mcp` lists each server
+        with facade tools registered (i.e. its API key is set) and its
+        current `enabled` toggle state (item48); `lsp` is a placeholder
+        (always empty) and `todo` is a placeholder (always null). Context
+        tokens are a bytes/4 estimate over the JSON serialization of the
+        session's provider messages (the per-session agent-state file,
+        system prompt included when loaded); WS protocol frames are
+        excluded entirely.
       responses:
         "200":
           description: Current state
@@ -96,6 +98,51 @@ paths:
                   error:
                     type: string
                     const: unknown tool
+                required: [ok, error]
+
+  /api/mcp:
+    post:
+      summary: Enable or disable an MCP server's tools
+      description: >
+        The panel-level MCP toggle (item48): applies per-tool suppression to
+        every registered MCP tool of that server, so a disabled server's
+        tools are hidden from the model for this session. NOT persisted
+        server-side — the browser is the durable store (per-folder
+        localStorage) and re-applies the stored disabled servers on boot; a
+        server restart re-exposes all MCP tools until the browser
+        reconnects. Unknown server (one with no registered facade tools) →
+        400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/McpToggle"
+      responses:
+        "200":
+          description: Toggle applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: true
+                required: [ok]
+        "400":
+          description: The server has no registered MCP tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: false
+                  error:
+                    type: string
+                    const: unknown mcp server
                 required: [ok, error]
 
   /api/model:
@@ -315,7 +362,12 @@ components:
         status:
           type: string
           enum: [connected]
-      required: [name, status]
+        enabled:
+          type: boolean
+          description: >-
+            Whether the server's tools are currently exposed to the model
+            (false when POST /api/mcp has suppressed them for this session)
+      required: [name, status, enabled]
 
     ToolToggle:
       type: object
@@ -327,6 +379,17 @@ components:
           type: boolean
           description: true to enable, false to disable (suppress)
       required: [name, enabled]
+
+    McpToggle:
+      type: object
+      properties:
+        server:
+          type: string
+          description: Registered MCP server name (e.g. "tavily")
+        enabled:
+          type: boolean
+          description: true to expose the server's tools, false to suppress them
+      required: [server, enabled]
 
     ModelSwap:
       type: object

@@ -8,7 +8,10 @@
     { "name": "WebSearch", "enabled": true, "source": "builtin" },
     { "name": "tavily_search", "enabled": true, "source": "mcp" }
   ],
-  "mcp": [{ "name": "tavily", "status": "connected" }],
+  "mcp": [
+    { "name": "tavily", "status": "connected", "enabled": true },
+    { "name": "context7", "status": "connected", "enabled": true }
+  ],
   "lsp": [],
   "todo": null
 }

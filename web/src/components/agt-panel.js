@@ -12,8 +12,9 @@ import { resolveContextWindow } from "../models.mjs";
  *
  * Data flow: agt-app owns the network and hands validated snapshots to
  * {@link AgtPanel#setState}; tool toggles are reported upward via the
- * `agt-toggle-tool` CustomEvent (agt-app does the POST and refetches state,
- * which reverts the optimistic row on failure).
+ * `agt-toggle-tool` CustomEvent and (item48) MCP server toggles via
+ * `agt-toggle-mcp` (agt-app does the POSTs and refetches state, which
+ * reverts the optimistic row on failure).
  */
 
 /**
@@ -26,7 +27,8 @@ import { resolveContextWindow } from "../models.mjs";
  */
 
 /**
- * `/api/state` snapshot (item27 pinned contract).
+ * `/api/state` snapshot (item27 pinned contract; item48 added the per-MCP
+ * `enabled` toggle state).
  *
  * @typedef {object} StateSnapshot
  * @property {string} provider
@@ -35,9 +37,30 @@ import { resolveContextWindow } from "../models.mjs";
  * @property {{ path: string | null, branch: string | null }} repo
  * @property {{ tokens: number, context_window?: number }} context
  * @property {ToolState[]} tools
- * @property {Array<{ name: string, status: string }>} mcp
+ * @property {McpServerState[]} mcp
  * @property {unknown[]} lsp
  * @property {unknown} todo
+ */
+
+/**
+ * One MCP server row from `/api/state` (item48): connection state as
+ * before, plus the on/off toggle state (whether the server's tools are
+ * currently exposed to the model).
+ *
+ * @typedef {object} McpServerState
+ * @property {string} name
+ * @property {string} status
+ * @property {boolean} enabled
+ */
+
+/**
+ * One toggle row handed to the shared row renderer (internal).
+ *
+ * @typedef {object} ToggleRow
+ * @property {string} name identity sent in the toggle event detail
+ * @property {string} label full row text after the [x]/[ ] mark
+ * @property {boolean} enabled
+ * @property {string} ariaLabel
  */
 
 /**
@@ -306,15 +329,19 @@ export class AgtPanel extends HTMLElement {
 
     const mcp = this.#sections.get("MCP");
     if (mcp) {
-      this.#setLines(
-        mcp,
-        Array.isArray(snapshot.mcp) && snapshot.mcp.length > 0
-          ? snapshot.mcp.map((entry) => ({
-              text: `${entry.name} ${capitalize(String(entry.status))}`,
-              cls: "agt-p-line",
-            }))
-          : [{ text: "(none)", cls: "agt-p-dim" }],
-      );
+      // item48: MCP rows are toggle rows like Built-ins — server name +
+      // connection state with an [x]/[ ] on/off mark; clicking fires the
+      // bubbling `agt-toggle-mcp` event (agt-app does the POST /api/mcp and
+      // refetches state, which reverts the optimistic row on failure).
+      const rows = Array.isArray(snapshot.mcp)
+        ? snapshot.mcp.map((entry) => ({
+            name: entry.name,
+            label: `${entry.name} ${capitalize(String(entry.status))}`,
+            enabled: Boolean(entry.enabled),
+            ariaLabel: `Toggle MCP ${entry.name}`,
+          }))
+        : [];
+      this.#renderToggles(mcp, rows, "agt-toggle-mcp");
     }
 
     const lsp = this.#sections.get("LSP");
@@ -408,10 +435,7 @@ export class AgtPanel extends HTMLElement {
   }
 
   /**
-   * Render the Built-ins tool rows. `onToggle` (optional) is called with
-   * `(name, enabled)` when a row flips; the element ALSO fires the bubbling
-   * `agt-toggle-tool` CustomEvent so agt-app can stay decoupled. Row updates
-   * are optimistic; agt-app refetches /api/state which reverts on failure.
+   * Render the Built-ins tool rows (toggle rows via {@link #renderToggles}).
    *
    * @param {ToolState[]} tools
    * @param {((name: string, enabled: boolean) => void) | null} [onToggle]
@@ -492,42 +516,67 @@ export class AgtPanel extends HTMLElement {
   #renderTools() {
     const section = this.#sections.get("Built-ins");
     if (!section) return;
-    if (this.#tools.length === 0) {
+    this.#renderToggles(
+      section,
+      this.#tools.map((tool) => ({
+        name: tool.name,
+        label: tool.name,
+        enabled: Boolean(tool.enabled),
+        ariaLabel: `Toggle tool ${tool.name}`,
+      })),
+      "agt-toggle-tool",
+    );
+  }
+
+  /**
+   * Shared toggle-row renderer (item48): one `[x]/[ ]` row per entry, used
+   * by both the Built-ins tree and the MCP tree. Rows are buttons-in-a-
+   * label with a checkbox; flipping one updates the mark optimistically and
+   * fires the bubbling `eventName` CustomEvent with
+   * `{ name, enabled }` (agt-app does the REST POST and refetches
+   * /api/state, which reverts the optimistic row on failure).
+   *
+   * @param {Section} section
+   * @param {ToggleRow[]} rows
+   * @param {"agt-toggle-tool" | "agt-toggle-mcp"} eventName
+   */
+  #renderToggles(section, rows, eventName) {
+    if (rows.length === 0) {
       this.#setLines(section, [{ text: "(none)", cls: "agt-p-dim" }]);
       return;
     }
     const frag = document.createDocumentFragment();
-    for (const tool of this.#tools) {
-      const row = document.createElement("label");
-      row.className = "agt-p-tool";
+    for (const row of rows) {
+      const el = document.createElement("label");
+      el.className = "agt-p-tool";
 
       const box = document.createElement("input");
       box.type = "checkbox";
-      box.checked = Boolean(tool.enabled);
-      box.setAttribute("aria-label", `Toggle tool ${tool.name}`);
+      box.checked = Boolean(row.enabled);
+      box.setAttribute("aria-label", row.ariaLabel);
 
       const mark = document.createElement("span");
       mark.className = "agt-p-mark";
       mark.textContent = box.checked ? "[x]" : "[ ]";
 
-      const name = document.createElement("span");
-      name.textContent = tool.name;
+      const label = document.createElement("span");
+      label.textContent = row.label;
 
       box.addEventListener("change", () => {
         const enabled = box.checked;
         mark.textContent = enabled ? "[x]" : "[ ]";
-        if (this.#onToggle) this.#onToggle(tool.name, enabled);
+        if (this.#onToggle) this.#onToggle(row.name, enabled);
         this.dispatchEvent(
-          new CustomEvent("agt-toggle-tool", {
-            detail: { name: tool.name, enabled },
+          new CustomEvent(eventName, {
+            detail: { name: row.name, enabled },
             bubbles: true,
             composed: true,
           }),
         );
       });
 
-      row.append(box, mark, name);
-      frag.append(row);
+      el.append(box, mark, label);
+      frag.append(el);
     }
     section.content.replaceChildren(frag);
   }

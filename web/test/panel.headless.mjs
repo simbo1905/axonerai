@@ -88,6 +88,23 @@ async function waitFor(fn, what, timeout = 3000) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+// ------------------------------------------------- stored MCP prefs (item48)
+
+// Seeded BEFORE agt-app is imported so the boot application path is
+// exercised: this fixture folder stores context7 disabled; a DIFFERENT
+// folder's key stores tavily disabled (the boot must NOT read it —
+// folder-scoped key isolation). Re-seeded on every run so reruns are
+// deterministic.
+const REPO_PATH = "/Users/Shared/axonerai"; // matches the fixture repo.path
+localStorage.setItem(
+  `agt.mcp-disabled:${REPO_PATH}`,
+  JSON.stringify(["context7"]),
+);
+localStorage.setItem(
+  "agt.mcp-disabled:/srv/other-checkout",
+  JSON.stringify(["tavily"]),
+);
+
 // ------------------------------------------------- stub fetch (before app)
 
 const realFetch = window.fetch.bind(window);
@@ -101,11 +118,30 @@ const postCalls = [];
 /** @type {Array<{ model: string }>} */
 const modelPosts = [];
 
+/** @type {Array<{ server: string, enabled: boolean }>} */
+const mcpPosts = [];
+
 window.fetch = /** @type {typeof window.fetch} */ (
   async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
     if (url === "/api/state") {
       return new Response(JSON.stringify(fixture), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === "/api/mcp" && init && init.method === "POST") {
+      // item48: emulate the server-side per-server suppression — the next
+      // /api/state reflects it in the mcp[].enabled field.
+      const body = /** @type {{ server: string, enabled: boolean }} */ (
+        JSON.parse(String(init.body))
+      );
+      mcpPosts.push(body);
+      const server = /** @type {{ name: string, enabled: boolean } | undefined} */ (
+        fixture.mcp?.find((/** @type {{ name: string }} */ m) => m.name === body.server)
+      );
+      if (server) server.enabled = body.enabled;
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -241,6 +277,7 @@ window.AgtClient = {
       emit,
       renames,
       postCalls,
+      mcpPosts,
       modelPosts,
     };
     captured.onOpen();
@@ -328,6 +365,26 @@ function titleText() {
   return title ? title.textContent ?? "" : "";
 }
 
+/**
+ * The checkbox of one MCP toggle row (item48).
+ *
+ * @param {string} name
+ * @returns {HTMLInputElement}
+ */
+function mcpBox(name) {
+  const rows = [...section("MCP").querySelectorAll(".agt-p-tool")];
+  const row = need(
+    rows.find((r) => r.textContent?.includes(name)),
+    `MCP row ${name} missing`,
+  );
+  return need(
+    /** @type {HTMLInputElement | null} */ (
+      row.querySelector("input[type=checkbox]")
+    ),
+    `MCP checkbox for ${name} missing`,
+  );
+}
+
 /** @returns {HTMLTextAreaElement} */
 function ta() {
   return need(
@@ -402,6 +459,83 @@ await test("panel boots from /api/state: footer status bar, MCP tavily Connected
   assert(
     sectionText("Context").includes("12345"),
     `Context should show token count, got ${JSON.stringify(sectionText("Context"))}`,
+  );
+});
+
+// --- item48: MCP toggle list -------------------------------------------------
+
+await test("boot applies THIS folder's stored disabled servers only (folder-scoped keys)", async () => {
+  // Seeded pre-import: repo key = ["context7"], other-folder key = ["tavily"].
+  // Boot must POST exactly one /api/mcp disable — context7 — and NOT the
+  // other folder's tavily entry.
+  await waitFor(() => mcpPosts.length >= 1, "boot POST /api/mcp");
+  await waitFor(
+    () => mcpBox("context7").checked === false,
+    "context7 row disabled after boot apply (refetched state)",
+  );
+  assertEqual(
+    JSON.stringify(mcpPosts),
+    JSON.stringify([{ server: "context7", enabled: false }]),
+    "boot applies only this folder's stored prefs (no tavily from /srv/other-checkout)",
+  );
+});
+
+await test("MCP section renders toggle rows with server name + connection state", () => {
+  const rows = [...section("MCP").querySelectorAll(".agt-p-tool")];
+  assertEqual(rows.length, 2, "fixture MCP servers rendered as toggle rows");
+  assert(
+    rows[0].textContent?.includes("tavily") &&
+      rows[0].textContent?.includes("Connected"),
+    `first row should be "tavily Connected", got ${JSON.stringify(rows[0].textContent)}`,
+  );
+  assert(
+    rows[1].textContent?.includes("context7") &&
+      rows[1].textContent?.includes("Connected"),
+    `second row should be "context7 Connected", got ${JSON.stringify(rows[1].textContent)}`,
+  );
+  assertEqual(mcpBox("tavily").checked, true, "tavily starts enabled");
+  assertEqual(mcpBox("context7").checked, false, "context7 was boot-disabled");
+});
+
+await test("toggling an MCP row POSTs /api/mcp, updates the folder-scoped key, and re-renders", async () => {
+  const box = mcpBox("tavily");
+  box.click();
+  await waitFor(() => mcpPosts.length === 2, "toggle POST /api/mcp");
+  assertEqual(
+    JSON.stringify(mcpPosts[1]),
+    JSON.stringify({ server: "tavily", enabled: false }),
+    "toggle POST body",
+  );
+  await waitFor(
+    () => mcpBox("tavily").checked === false,
+    "row re-rendered from the refetched (persisted server-side) state",
+  );
+  const stored = JSON.parse(
+    localStorage.getItem(`agt.mcp-disabled:${REPO_PATH}`) ?? "[]",
+  );
+  assert(
+    stored.includes("tavily") && stored.includes("context7"),
+    `disabled list must hold both servers, got ${JSON.stringify(stored)}`,
+  );
+
+  // Toggle back on: the re-enable POSTs and the server leaves the list.
+  mcpBox("tavily").click();
+  await waitFor(() => mcpPosts.length === 3, "re-enable POST /api/mcp");
+  assertEqual(
+    JSON.stringify(mcpPosts[2]),
+    JSON.stringify({ server: "tavily", enabled: true }),
+    "re-enable POST body",
+  );
+  await waitFor(
+    () => mcpBox("tavily").checked === true,
+    "row re-enabled from the refetched state",
+  );
+  const storedAfter = JSON.parse(
+    localStorage.getItem(`agt.mcp-disabled:${REPO_PATH}`) ?? "[]",
+  );
+  assert(
+    !storedAfter.includes("tavily") && storedAfter.includes("context7"),
+    `re-enabled server removed from the stored list, got ${JSON.stringify(storedAfter)}`,
   );
 });
 

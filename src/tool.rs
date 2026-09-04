@@ -38,6 +38,15 @@ pub trait Tool: Send + Sync {
         ToolSource::Builtin
     }
 
+    /// Which (fake) MCP server this tool belongs to, when
+    /// [`Tool::source`] is [`ToolSource::Mcp`]. Defaults to `None`;
+    /// MCP facade tools override this with their server's name so the
+    /// panel's per-server on/off toggle (POST /api/mcp) can suppress all
+    /// of a server's tools at once.
+    fn mcp_server(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Whether the tool only reads state and never mutates anything outside
     /// the agent scratch area. Defaults to `true`; write tools (currently
     /// only `write_file`) override to `false`. The future `--tools-readonly`
@@ -131,6 +140,47 @@ impl ToolRegistry {
     /// Whether the tool is currently suppressed (disabled).
     pub fn is_suppressed(&self, name: &str) -> bool {
         self.lock_suppressed().contains(name)
+    }
+
+    /// All registered MCP server names (sorted, deduped) — the servers that
+    /// have at least one `ToolSource::Mcp` tool. This is the set of servers
+    /// the /api/mcp toggle accepts (an unregistered server is unknown).
+    pub fn mcp_servers(&self) -> Vec<String> {
+        let mut servers: Vec<String> = self
+            .tools
+            .values()
+            .filter(|tool| tool.source() == ToolSource::Mcp)
+            .filter_map(|tool| tool.mcp_server().map(str::to_string))
+            .collect();
+        servers.sort();
+        servers.dedup();
+        servers
+    }
+
+    /// Enable or disable ALL tools of one MCP server (panel-level toggle).
+    /// A disabled server's tools are hidden from the model and error on
+    /// execution — per-tool suppression entries for that server's tools, so
+    /// the proven registry mechanism carries the state. Unknown servers
+    /// have no tools and are a no-op (the HTTP layer 400s first).
+    pub fn set_mcp_suppressed(&self, server: &str, enabled: bool) {
+        let names: Vec<String> = self
+            .tools
+            .values()
+            .filter(|tool| tool.source() == ToolSource::Mcp && tool.mcp_server() == Some(server))
+            .map(|tool| tool.name())
+            .collect();
+        for name in names {
+            self.set_suppressed(&name, enabled);
+        }
+    }
+
+    /// Whether every tool of the MCP server is currently enabled (not
+    /// suppressed). A server with no registered tools reports `true`.
+    pub fn mcp_server_enabled(&self, server: &str) -> bool {
+        self.tools
+            .values()
+            .filter(|tool| tool.source() == ToolSource::Mcp && tool.mcp_server() == Some(server))
+            .all(|tool| !self.lock_suppressed().contains(&tool.name()))
     }
 
     /// All currently suppressed tool names, sorted (for persistence).
@@ -391,5 +441,93 @@ mod tests {
             registry.suppressed_names(),
             vec!["WebSearch".to_string(), "tavily_search".to_string()]
         );
+    }
+
+    // --- item48: per-MCP-server suppression (POST /api/mcp) -----------------
+
+    fn serverless_dummy(name: &'static str, source: ToolSource) -> Box<dyn Tool> {
+        // `dummy` never sets mcp_server, so it reports None even for Mcp
+        // tools — exactly the pre-item48 shape. Used to prove serverless Mcp
+        // tools are invisible to the per-server toggle.
+        dummy(name, source)
+    }
+
+    #[test]
+    fn mcp_servers_lists_sorted_deduped_builtin_only_servers() {
+        let mut registry = ToolRegistry::new();
+        registry.register(serverless_dummy("Calc", ToolSource::Builtin));
+        registry.register(serverless_dummy("orphan", ToolSource::Mcp));
+        assert!(
+            registry.mcp_servers().is_empty(),
+            "no tool reports a server yet"
+        );
+
+        registry.register(Box::new(crate::tools::TavilyMcpSearch::new()));
+        registry.register(Box::new(crate::tools::TavilyMcpExtract::new()));
+        registry.register(Box::new(crate::tools::Context7McpResolveLibraryId::new()));
+        registry.register(Box::new(crate::tools::Context7McpGetLibraryDocs::new()));
+        assert_eq!(
+            registry.mcp_servers(),
+            vec!["context7".to_string(), "tavily".to_string()]
+        );
+    }
+
+    #[test]
+    fn set_mcp_suppressed_disables_only_that_servers_tools() {
+        let mut registry = ToolRegistry::new();
+        registry.register(dummy("WebSearch", ToolSource::Builtin));
+        registry.register(Box::new(crate::tools::TavilyMcpSearch::new()));
+        registry.register(Box::new(crate::tools::TavilyMcpExtract::new()));
+        registry.register(Box::new(crate::tools::Context7McpResolveLibraryId::new()));
+
+        assert_eq!(registry.get_all_for_llm().len(), 4);
+
+        registry.set_mcp_suppressed("tavily", false);
+
+        // Registry-level: the whole tavily server disappears from the
+        // LLM-facing tool list (an agent run would not see it); builtins
+        // and the other server stay. (HashMap order → compare as a set.)
+        let for_llm: Vec<String> = registry
+            .get_all_for_llm()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(for_llm.len(), 2);
+        assert!(for_llm.contains(&"WebSearch".to_string()));
+        assert!(for_llm.contains(&"context7_resolve_library_id".to_string()));
+        assert!(registry.is_suppressed("tavily_search"));
+        assert!(registry.is_suppressed("tavily_extract"));
+        assert!(!registry.is_suppressed("context7_resolve_library_id"));
+
+        // Per-server enabled state mirrors the suppression.
+        assert!(!registry.mcp_server_enabled("tavily"));
+        assert!(registry.mcp_server_enabled("context7"));
+
+        // Re-enable restores every tool of the server.
+        registry.set_mcp_suppressed("tavily", true);
+        assert_eq!(registry.get_all_for_llm().len(), 4);
+        assert!(!registry.is_suppressed("tavily_search"));
+        assert!(registry.mcp_server_enabled("tavily"));
+    }
+
+    #[test]
+    fn set_mcp_suppressed_unknown_server_is_noop() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(crate::tools::TavilyMcpSearch::new()));
+        registry.set_mcp_suppressed("not-a-server", false);
+        registry.set_mcp_suppressed("", false);
+        assert_eq!(registry.get_all_for_llm().len(), 1);
+        assert!(registry.mcp_server_enabled("tavily"));
+    }
+
+    #[test]
+    fn default_mcp_server_is_none() {
+        let mut registry = ToolRegistry::new();
+        registry.register(serverless_dummy("orphan", ToolSource::Mcp));
+        // A serverless Mcp tool (pre-item48 shape) is never matched by the
+        // per-server toggle: "tavily" is unknown and suppression is a noop.
+        registry.set_mcp_suppressed("tavily", false);
+        assert_eq!(registry.get_all_for_llm().len(), 1);
+        assert!(registry.mcp_servers().is_empty());
     }
 }

@@ -56,6 +56,8 @@ declare global {
       emit(frame: unknown): void;
       renames: string[];
       postCalls: Array<{ name: string; enabled: boolean }>;
+      /** Recorded POST /api/mcp bodies (item48 MCP toggles). */
+      mcpPosts: Array<{ server: string; enabled: boolean }>;
       modelPosts: Array<{ model: string }>;
     };
     /** Headless pretty-printer smoke results (pretty.headless.mjs). */

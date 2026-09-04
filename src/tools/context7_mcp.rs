@@ -83,6 +83,10 @@ impl Tool for Context7McpResolveLibraryId {
         ToolSource::Mcp
     }
 
+    fn mcp_server(&self) -> Option<&'static str> {
+        Some("context7")
+    }
+
     async fn execute(&self, input: Value) -> Result<String> {
         let input: Context7ResolveInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid context7_resolve_library_id input: {}", e))?;
@@ -174,6 +178,10 @@ impl Tool for Context7McpGetLibraryDocs {
         ToolSource::Mcp
     }
 
+    fn mcp_server(&self) -> Option<&'static str> {
+        Some("context7")
+    }
+
     async fn execute(&self, input: Value) -> Result<String> {
         let input: Context7DocsInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid context7_get_library_docs input: {}", e))?;
@@ -208,6 +216,20 @@ mod tests {
     use crate::tools::context7::{MAX_DOCS_OUTPUT_CHARS, MAX_PAGE, sample_search_response};
     use crate::tools::testing::{env_guard, set_context7_key, spawn_stub, unset_context7_key};
     use serde_json::json;
+
+    /// item48: both facade tools report the `context7` server so the panel's
+    /// per-server toggle (POST /api/mcp) can suppress them together.
+    #[test]
+    fn facade_tools_report_their_server() {
+        assert_eq!(
+            Context7McpResolveLibraryId::new().mcp_server(),
+            Some("context7")
+        );
+        assert_eq!(
+            Context7McpGetLibraryDocs::new().mcp_server(),
+            Some("context7")
+        );
+    }
 
     #[tokio::test]
     async fn resolve_round_trips_through_stub_server() {

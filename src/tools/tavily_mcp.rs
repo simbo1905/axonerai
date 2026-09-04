@@ -78,6 +78,10 @@ impl Tool for TavilyMcpSearch {
         ToolSource::Mcp
     }
 
+    fn mcp_server(&self) -> Option<&'static str> {
+        Some("tavily")
+    }
+
     async fn execute(&self, input: Value) -> Result<String> {
         let input: TavilyMcpSearchInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid tavily_search input: {}", e))?;
@@ -160,6 +164,10 @@ impl Tool for TavilyMcpExtract {
         ToolSource::Mcp
     }
 
+    fn mcp_server(&self) -> Option<&'static str> {
+        Some("tavily")
+    }
+
     async fn execute(&self, input: Value) -> Result<String> {
         let input: TavilyMcpExtractInput = serde_json::from_value(input)
             .map_err(|e| anyhow!("Invalid tavily_extract input: {}", e))?;
@@ -182,6 +190,14 @@ mod tests {
     use crate::tool::ToolRegistry;
     use crate::tools::testing::{env_guard, set_key, spawn_stub, unset_key};
     use serde_json::json;
+
+    /// item48: both facade tools report the `tavily` server so the panel's
+    /// per-server toggle (POST /api/mcp) can suppress them together.
+    #[test]
+    fn facade_tools_report_their_server() {
+        assert_eq!(TavilyMcpSearch::new().mcp_server(), Some("tavily"));
+        assert_eq!(TavilyMcpExtract::new().mcp_server(), Some("tavily"));
+    }
 
     #[tokio::test]
     async fn search_round_trips_through_stub_server() {
