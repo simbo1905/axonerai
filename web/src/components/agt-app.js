@@ -3,7 +3,6 @@ import { deepFreeze, parseWireEvent } from "/src/wire.mjs";
 import { dispatch, registerHandler } from "../dispatch.mjs";
 import { createStore } from "../store.mjs";
 import { COMMANDS, parseInput } from "../commands.mjs";
-import { contextWindowFor, fetchProviderModels, modelsForProvider } from "../models.mjs";
 import { fetchSkills } from "../skills.mjs";
 import { installConsoleBus } from "../console-bus.mjs";
 import { mcpDisabledKey, parseDisabledServers } from "../mcp-prefs.mjs";
@@ -166,12 +165,6 @@ export class AgtApp extends HTMLElement {
           typeof detail.enabled === "boolean"
         ) {
           this.#toggleMcp(detail.name, detail.enabled);
-        }
-      });
-      panel.addEventListener("agt-select-model", (e) => {
-        const detail = /** @type {CustomEvent} */ (e).detail;
-        if (detail && typeof detail.model === "string") {
-          this.#swapModel(detail.model);
         }
       });
       this.#panel = panel;
@@ -518,32 +511,6 @@ export class AgtApp extends HTMLElement {
     }
 
     switch (parsed.name) {
-      case "models": {
-        const snapshot = this.#snapshot ?? (await this.#fetchState());
-        if (!snapshot) {
-          console.error("[slash] error: /api/state unavailable");
-          return;
-        }
-        // item41: the server's per-provider models config (local masks user)
-        // wins; the hardcoded roster is the fallback (server down / no
-        // config file / malformed payload).
-        const remote = await fetchProviderModels();
-        const models =
-          remote &&
-          remote.provider === snapshot.provider &&
-          remote.models.length > 0
-            ? remote.models.map((row) => ({
-                id: row.id,
-                contextWindow: row.contextWindow,
-              }))
-            : modelsForProvider(snapshot.provider).map((id) => ({
-                id,
-                contextWindow: contextWindowFor(id),
-              }));
-        panel.showModels(models);
-        console.log("[slash] models: opened the Models tree");
-        return;
-      }
       case "built-ins": {
         if (!this.#snapshot) await this.#fetchState();
         console.log("[slash] built-ins: opened the Built-ins tree");
@@ -629,47 +596,6 @@ export class AgtApp extends HTMLElement {
       default:
         console.error(`[slash] error: unhandled command '/${parsed.name}'`);
     }
-  }
-
-  /**
-   * Swap the model for subsequent agent runs: POST /api/model on the REST
-   * control plane (never the model LLM), then adopt the returned /api/state
-   * snapshot so the panel and the footer status bar reflect the swap
-   * immediately. A 400 (unknown model) reports the server error on the
-   * console bus and leaves the current snapshot alone.
-   *
-   * @param {string} model
-   */
-  async #swapModel(model) {
-    let snapshot = null;
-    try {
-      const res = await fetch("/api/model", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        const message =
-          body && typeof body.error === "string"
-            ? body.error
-            : `POST /api/model failed (${res.status})`;
-        throw new Error(message);
-      }
-      snapshot = deepFreeze(await res.json());
-    } catch (error) {
-      console.error(
-        `[slash] error: model swap failed — ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return;
-    }
-    this.#snapshot = snapshot;
-    if (snapshot && !this.#sessionId) {
-      this.#sessionId = snapshot.session?.id ?? null;
-    }
-    this.#render();
   }
 
   /**

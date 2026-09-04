@@ -7,8 +7,6 @@
  * each command (fetch/WS control plane — commands NEVER go to the model).
  *
  * Run signatures (implemented in web/src/components/agt-app.js):
- * - models:    `run() => void` — opens the panel Models tree (models for the
- *              current provider); selecting a row POSTs /api/model.
  * - built-ins: `run() => void` — opens the panel Built-ins tree.
  * - mcp:       `run() => void` — opens the panel MCP tree (per-server
  *              on/off toggles; item54, mirror of /built-ins).
@@ -61,10 +59,6 @@
  * @type {ReadonlyArray<Readonly<CommandMeta>>}
  */
 export const COMMANDS = Object.freeze([
-  Object.freeze({
-    name: "models",
-    description: "list models for the current provider and switch",
-  }),
   Object.freeze({
     name: "built-ins",
     description: "show the built-in tools with on/off toggles",

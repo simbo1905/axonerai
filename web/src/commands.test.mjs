@@ -107,7 +107,6 @@ test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("").map((c) => c.name),
     [
-      "models",
       "built-ins",
       "mcp",
       "skills",
@@ -120,7 +119,6 @@ test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("/").map((c) => c.name),
     [
-      "models",
       "built-ins",
       "mcp",
       "skills",
@@ -140,10 +138,6 @@ test("prefix filtering matches command names", () => {
       description: "list available skills",
     },
   ]);
-  assert.deepEqual(
-    filterCommands("mo").map((c) => c.name),
-    ["models"],
-  );
   assert.deepEqual(filterCommands("con"), [
     {
       name: "console",
@@ -178,7 +172,6 @@ test("registry has exactly the v1+console+skills+mcp commands with descriptions"
   assert.deepEqual(
     COMMANDS.map((c) => c.name),
     [
-      "models",
       "built-ins",
       "mcp",
       "skills",
@@ -241,11 +234,6 @@ test("/mcp is registered, parses without args, and /help will list it", () => {
   assert.ok(
     helpText.includes("/mcp — show the MCP servers with on/off toggles"),
     `/help must list /mcp, got ${JSON.stringify(helpText)}`,
-  );
-  // Menu filtering: /m matches both /models and /mcp.
-  assert.deepEqual(
-    filterCommands("m").map((c) => c.name),
-    ["models", "mcp"],
   );
   assert.deepEqual(
     filterCommands("mc").map((c) => c.name),

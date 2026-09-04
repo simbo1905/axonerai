@@ -115,9 +115,6 @@ let fixture = await (await realFetch("/test/fixtures/state.json")).json();
 /** @type {Array<{ name: string, enabled: boolean }>} */
 const postCalls = [];
 
-/** @type {Array<{ model: string }>} */
-const modelPosts = [];
-
 /** @type {Array<{ server: string, enabled: boolean }>} */
 const mcpPosts = [];
 
@@ -161,32 +158,6 @@ window.fetch = /** @type {typeof window.fetch} */ (
         headers: { "Content-Type": "application/json" },
       });
     }
-    if (url === "/api/models") {
-      // item41: the server's per-provider models config (local masks user).
-      return new Response(
-        JSON.stringify({
-          provider: "mistral",
-          source: "local",
-          models: [
-            {
-              id: "zai-glm-5-2",
-              display: "GLM-5.2",
-              context_window: 32768,
-              costs: null,
-              offer: null,
-            },
-            {
-              id: "mistral-medium-latest",
-              display: "Mistral Medium",
-              context_window: 131072,
-              costs: null,
-              offer: null,
-            },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }
     if (url === "/api/skills") {
       // item49: the skills listing (local masks user, resolved server-side).
       return new Response(
@@ -212,33 +183,6 @@ window.fetch = /** @type {typeof window.fetch} */ (
         ]),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
-    }
-    if (url === "/api/model" && init && init.method === "POST") {
-      const body = /** @type {{ model: string }} */ (
-        JSON.parse(String(init.body))
-      );
-      modelPosts.push(body);
-      if (body.model === "bogus-model") {
-        return new Response(
-          JSON.stringify({
-            ok: false,
-            error: "unknown model 'bogus-model' for provider 'mistral'",
-          }),
-          { status: 400, headers: { "Content-Type": "application/json" } },
-        );
-      }
-      // Emulate the server swap: the response IS the updated snapshot, and
-      // the config context_window is per-model — the swapped model is not
-      // in the models config, so the window drops (the browser then falls
-      // back to its hardcoded map).
-      fixture.model = body.model;
-      if (fixture.context && "context_window" in fixture.context) {
-        delete fixture.context.context_window;
-      }
-      return new Response(JSON.stringify(fixture), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
     }
     return realFetch(/** @type {RequestInfo} */ (input), init);
   }
@@ -308,7 +252,6 @@ window.AgtClient = {
       prompts,
       postCalls,
       mcpPosts,
-      modelPosts,
     });
     captured.onOpen();
     await Promise.resolve();
@@ -668,46 +611,7 @@ await test("menu closes when input no longer starts with /", async () => {
   assert(menuEl().hidden === true, "menu should close for non-slash input");
 });
 
-await test("Enter on /models opens the Models tree; other trees collapse", async () => {
-  assert(isCollapsed("Context") === false, "Context expanded before command");
-  assert(isCollapsed("MCP") === false, "MCP expanded before command");
-  await type("/models");
-  await pressKey("Enter");
-  await waitFor(() => slashText().includes("/models"), "slash invocation echo");
-  await waitFor(() => isCollapsed("Models") === false, "Models expanded");
-  assertEqual(ta().value, "", "input cleared after running the command");
-  const rows = [...section("Models").querySelectorAll(".agt-p-model")];
-  assertEqual(rows.length, 2, "mistral roster rows rendered");
-  // item41: rows come from /api/models (stubbed) — the config window (33K)
-  // wins over the hardcoded 131K.
-  assert(
-    rows[0].textContent?.includes("zai-glm-5-2") &&
-      rows[0].textContent?.includes("33K"),
-    `first row should be zai-glm-5-2 with its config context window, got ${JSON.stringify(rows[0].textContent)}`,
-  );
-  assert(
-    rows[1].textContent?.includes("mistral-medium-latest") &&
-      rows[1].textContent?.includes("131K"),
-    `second row should be mistral-medium-latest with its context window, got ${JSON.stringify(rows[1].textContent)}`,
-  );
-  assert(isCollapsed("Context"), "Context should be collapsed after a command");
-  assert(isCollapsed("MCP"), "MCP should be collapsed after a command");
-  assert(isCollapsed("LSP"), "LSP should be collapsed after a command");
-  assert(isCollapsed("Todo"), "Todo should be collapsed after a command");
-  assert(isCollapsed("Slash"), "Slash should be collapsed after a command");
-  assert(
-    isCollapsed("Skills"),
-    "Skills should be collapsed after a command",
-  );
-  assert(
-    isCollapsed("Built-ins"),
-    "Built-ins should be collapsed after a command",
-  );
-});
-
 await test("/skills opens the Skills tree with name + source tag rows; other trees collapse", async () => {
-  // NOTE: this runs after the /models test, so every other tree is already
-  // collapsed by that command — only the expansion of Skills is new here.
   await type("/skills");
   await pressKey("Enter");
   await waitFor(() => isCollapsed("Skills") === false, "Skills expanded");
@@ -735,36 +639,6 @@ await test("/skills opens the Skills tree with name + source tag rows; other tre
     "skills result must not render in the Slash tree",
   );
   await waitFor(() => slashText().includes("/skills"), "skills invocation echo");
-});
-
-await test("selecting a Models row POSTs /api/model and the footer reflects the swap", async () => {
-  const rows = [...section("Models").querySelectorAll(".agt-p-model")];
-  const target = need(
-    rows.find((row) => row.textContent?.includes("mistral-medium-latest")),
-    "mistral-medium-latest row missing",
-  );
-  target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-  await waitFor(() => modelPosts.length === 1, "POST /api/model call");
-  assertEqual(
-    JSON.stringify(modelPosts[0]),
-    JSON.stringify({ model: "mistral-medium-latest" }),
-    "POST /api/model body",
-  );
-  await waitFor(
-    () => footerLeftText() === "Chat · mistral-medium-latest mistral · think off",
-    "footer model after swap",
-  );
-  assertEqual(
-    footerLeftText(),
-    "Chat · mistral-medium-latest mistral · think off",
-    "footer left after swap",
-  );
-  assertEqual(footerRightText(), "12.3K (9%)", "footer right after swap");
-  assertEqual(
-    /** @type {any} */ (app).snapshot?.model,
-    "mistral-medium-latest",
-    "app snapshot model swapped",
-  );
 });
 
 await test("/built-ins opens the Built-ins tree with the fixture tools; flipping a toggle POSTs", async () => {
@@ -920,35 +794,6 @@ await test("app snapshot is deep-frozen", () => {
   assert(Object.isFrozen(snapshot), "snapshot not frozen");
   assert(Object.isFrozen(snapshot.tools), "snapshot.tools not frozen");
   assert(Object.isFrozen(snapshot.session), "snapshot.session not frozen");
-});
-
-await test("typo'd prefix /m resolves through the menu to /models with a canonical echo", async () => {
-  await type("/m");
-  const menu = menuEl();
-  assert(menu.hidden === false, "menu open for the /m prefix");
-  const options = [...menu.querySelectorAll("[role=option]")];
-  assertEqual(
-    options.length,
-    2,
-    "/m matches /models and the item54 /mcp",
-  );
-  assertEqual(
-    /** @type {HTMLElement} */ (options[0]).dataset.name,
-    "models",
-    "matched command is models",
-  );
-  await pressKey("Enter");
-  await waitFor(() => isCollapsed("Models") === false, "Models tree opened");
-  assertEqual(ta().value, "", "input cleared");
-  await waitFor(() => lastEcho() === "/models", "canonical /models echo");
-  // The menu selection RESOLVES the typo: the echoed line is the canonical
-  // command text, never the raw "/m" prefix that would fail to parse.
-  assertEqual(lastEcho(), "/models", "echo must be the resolved command");
-  assertEqual(
-    /** @type {any} */ (app).snapshot?.model,
-    "mistral-medium-latest",
-    "models tree still shows the swapped roster (no unintended re-run)",
-  );
 });
 
 await test("Enter sends chat text to the model path; Shift+Enter keeps it without sending", async () => {

@@ -1,6 +1,5 @@
 // @ts-check
 import { footerSegments, formatFooter } from "../footer.mjs";
-import { resolveContextWindow } from "../models.mjs";
 
 /**
  * Right-hand TUI-style side panel: session title, Context / MCP / LSP / Todo /
@@ -61,15 +60,6 @@ import { resolveContextWindow } from "../models.mjs";
  * @property {string} label full row text after the [x]/[ ] mark
  * @property {boolean} enabled
  * @property {string} ariaLabel
- */
-
-/**
- * One selectable row of the Models tree (web/src/models.mjs roster).
- *
- * @typedef {object} ModelRow
- * @property {string} id model id sent to POST /api/model
- * @property {number | null} contextWindow context window in tokens (null
- *   when unknown — the K suffix is then omitted)
  */
 
 /**
@@ -236,12 +226,6 @@ export class AgtPanel extends HTMLElement {
       .agt-p-tool input:focus-visible ~ .agt-p-mark {
         outline: 1px solid #3b82f6;
       }
-      .agt-p-model {
-        display: block; width: 100%; background: none; border: none;
-        padding: 0; color: #a7f3d0; font: inherit; cursor: pointer;
-        text-align: left;
-      }
-      .agt-p-model:hover { color: #bae6fd; }
       .agt-p-footer {
         display: flex; align-items: baseline; justify-content: space-between;
         gap: 8px; border-top: 1px solid #1e293b; padding: 8px 10px;
@@ -395,9 +379,6 @@ export class AgtPanel extends HTMLElement {
     const footer = this.#footerEl;
     if (!footer) return;
     const segments = footerSegments(snapshot);
-    // item41: the snapshot's config-driven context_window wins; the
-    // hardcoded map in web/src/models.mjs is the fallback.
-    const contextWindow = resolveContextWindow(snapshot);
     const { right } = formatFooter(snapshot, contextWindow);
     const left = document.createElement("span");
     left.className = "agt-p-footer-left";
@@ -506,50 +487,6 @@ export class AgtPanel extends HTMLElement {
         cls: "agt-p-line",
       })),
     );
-  }
-
-  /**
-   * Render the Models tree (slash /models): one row per model for the
-   * CURRENT provider — `model id (K)` with the context window when known.
-   * Collapses every other tree, expands Models (one tree expanded at a
-   * time). Clicking a row fires the bubbling `agt-select-model` CustomEvent
-   * with `{ model: "<id>" }` so agt-app can stay decoupled (it POSTs
-   * /api/model).
-   *
-   * @param {ModelRow[]} models
-   */
-  showModels(models) {
-    if (!this.#rendered) return;
-    for (const [name, section] of this.#sections) {
-      section.setCollapsed(name === "Models" ? false : true);
-    }
-    const section = this.#sections.get("Models");
-    if (!section) return;
-    if (!Array.isArray(models) || models.length === 0) {
-      this.#setLines(section, [{ text: "(none)", cls: "agt-p-dim" }]);
-      return;
-    }
-    const frag = document.createDocumentFragment();
-    for (const model of models) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "agt-p-model";
-      row.textContent =
-        typeof model.contextWindow === "number"
-          ? `${model.id} (${Math.round(model.contextWindow / 1000)}K)`
-          : model.id;
-      row.addEventListener("click", () => {
-        this.dispatchEvent(
-          new CustomEvent("agt-select-model", {
-            detail: { model: model.id },
-            bubbles: true,
-            composed: true,
-          }),
-        );
-      });
-      frag.append(row);
-    }
-    section.content.replaceChildren(frag);
   }
 
   /**

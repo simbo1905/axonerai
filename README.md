@@ -202,9 +202,6 @@ status-bar footer shows `Chat · <model> <provider> · think off` plus the
 context use `<used>K (<percent>%)` over the model's context window. Commands
 are typed in the composer:
 
-- `/models` — open the Models tree (models for the current provider) and
-  switch: selecting a row POSTs `/api/model` to swap the model used for
-  subsequent agent runs.
 - `/built-ins` — open the Built-ins tree and toggle tools per session.
 - `/verbose` — toggle verbose output rendering (tool-call trace lines).
 - `/rename <title>` — rename the session.
