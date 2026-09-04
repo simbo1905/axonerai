@@ -599,17 +599,18 @@ await test("toggling an MCP row POSTs /api/mcp, updates the folder-scoped key, a
   );
 });
 
-await test("typing / opens the menu with all 7 commands", async () => {
+await test("typing / opens the menu with all 8 commands", async () => {
   await type("/");
   const menu = menuEl();
   assert(menu.hidden === false, "menu should be open after typing /");
   const options = [...menu.querySelectorAll("[role=option]")];
-  assertEqual(options.length, 7, "expected 7 commands in the menu");
+  assertEqual(options.length, 8, "expected 8 commands in the menu");
   assertEqual(
     options.map((o) => o.textContent).join("|"),
     [
       "/modelslist models for the current provider and switch",
       "/built-insshow the built-in tools with on/off toggles",
+      "/mcpshow the MCP servers with on/off toggles",
       "/skillslist available skills",
       "/verbosetoggle verbose output rendering",
       "/renamerename the session: /rename <title>",
@@ -634,13 +635,15 @@ await test("typing / opens the menu with all 7 commands", async () => {
 await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input keeps focus", async () => {
   await type("/");
   const menu = menuEl();
+  const optionCount = menu.querySelectorAll("[role=option]").length;
   await pressKey("ArrowDown");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
     "agt-slash-opt-1",
     "ArrowDown should move to the second option",
   );
-  for (let i = 0; i < 6; i++) await pressKey("ArrowDown");
+  // Wrap is count-agnostic: N-1 more downs from index 1 land back on 0.
+  for (let i = 0; i < optionCount - 1; i++) await pressKey("ArrowDown");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
     "agt-slash-opt-0",
@@ -649,7 +652,7 @@ await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input ke
   await pressKey("ArrowUp");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
-    "agt-slash-opt-6",
+    `agt-slash-opt-${optionCount - 1}`,
     "ArrowUp should wrap to the last option",
   );
   await pressKey("Escape");
@@ -797,6 +800,33 @@ await test("/built-ins opens the Built-ins tree with the fixture tools; flipping
   await waitFor(() => box.checked === false, "row updated (persisted server-side)");
 });
 
+await test("/mcp opens the MCP tree with the fixture servers; other trees collapse", async () => {
+  await type("/mcp");
+  await pressKey("Enter");
+  await waitFor(() => isCollapsed("MCP") === false, "MCP expanded");
+  assertEqual(ta().value, "", "input cleared after running the command");
+  // item54: /mcp is the mirror of /built-ins — the item48 per-server toggle
+  // rows come straight from the /api/state snapshot.
+  const rows = [...section("MCP").querySelectorAll(".agt-p-tool")];
+  assertEqual(rows.length, 2, "fixture MCP servers rendered as rows");
+  assert(
+    rows[0].textContent?.includes("tavily"),
+    `first row should be tavily, got ${JSON.stringify(rows[0].textContent)}`,
+  );
+  assert(
+    rows[1].textContent?.includes("context7"),
+    `second row should be context7, got ${JSON.stringify(rows[1].textContent)}`,
+  );
+  assert(isCollapsed("Built-ins"), "Built-ins should be collapsed after /mcp");
+  assert(isCollapsed("Skills"), "Skills should be collapsed after /mcp");
+  // item32: the result line goes to the console bus, not the Slash tree.
+  assert(
+    !slashText().includes("opened the MCP tree"),
+    "mcp result must not render in the Slash tree",
+  );
+  await waitFor(() => slashText().includes("/mcp"), "mcp invocation echo");
+});
+
 await test("/rename sends the WS rename and the panel title updates on ack", async () => {
   await type("/rename panel-test");
   await pressKey("Enter");
@@ -897,7 +927,11 @@ await test("typo'd prefix /m resolves through the menu to /models with a canonic
   const menu = menuEl();
   assert(menu.hidden === false, "menu open for the /m prefix");
   const options = [...menu.querySelectorAll("[role=option]")];
-  assertEqual(options.length, 1, "only /models matches the /m prefix");
+  assertEqual(
+    options.length,
+    2,
+    "/m matches /models and the item54 /mcp",
+  );
   assertEqual(
     /** @type {HTMLElement} */ (options[0]).dataset.name,
     "models",

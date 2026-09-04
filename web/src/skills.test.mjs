@@ -93,3 +93,43 @@ test("fetchSkills returns null on non-ok, non-array and network failure", async 
     globalThis.fetch = original;
   }
 });
+
+// item54: the server drops settings-disabled BUILT-INS from /api/skills;
+// the client must have no builtin hardcoding — a listing where a builtin
+// (deepresearch) is absent is accepted exactly like any other payload and
+// never re-injected client-side.
+test("fetchSkills accepts a listing with a builtin filtered out (no client hardcoding)", async () => {
+  const original = globalThis.fetch;
+  try {
+    stubFetch(async () =>
+      new Response(
+        JSON.stringify([
+          {
+            name: "greeting",
+            description: "greet politely",
+            source: "local",
+            path: ".axonerai/skills/greeting/SKILL.md",
+          },
+          {
+            name: "deploy",
+            description: "ship it",
+            source: "user",
+            path: "/home/u/.axonerai/skills/deploy/SKILL.md",
+          },
+        ]),
+        { status: 200 },
+      ),
+    );
+    const skills = await fetchSkills();
+    assert.ok(skills, "payload accepted without the builtin");
+    const rows = /** @type {readonly { name: string, source: string }[]} */ (skills);
+    assert.deepEqual(
+      rows.map((row) => row.name),
+      ["greeting", "deploy"],
+      "only the server-sent rows survive — no builtin re-injection",
+    );
+    assert.ok(Object.isFrozen(rows), "list still frozen");
+  } finally {
+    globalThis.fetch = original;
+  }
+});

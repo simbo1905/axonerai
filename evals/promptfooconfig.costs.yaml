@@ -1,3 +1,4 @@
+# item54: repeat runs get a fresh session via POST http://127.0.0.1:<port>/api/session/reset — no server restart needed.
 # item43 — model-cost update workflow evals + the ModelsConfig builtin.
 #
 # Run from the repo root (two live axoner-web servers on item43's OWN ports

@@ -106,11 +106,29 @@ test("/model is retired: unknown command", () => {
 test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("").map((c) => c.name),
-    ["models", "built-ins", "skills", "verbose", "rename", "help", "console"],
+    [
+      "models",
+      "built-ins",
+      "mcp",
+      "skills",
+      "verbose",
+      "rename",
+      "help",
+      "console",
+    ],
   );
   assert.deepEqual(
     filterCommands("/").map((c) => c.name),
-    ["models", "built-ins", "skills", "verbose", "rename", "help", "console"],
+    [
+      "models",
+      "built-ins",
+      "mcp",
+      "skills",
+      "verbose",
+      "rename",
+      "help",
+      "console",
+    ],
   );
   assert.deepEqual(
     filterCommands("/b").map((c) => c.name),
@@ -156,10 +174,19 @@ test("commands are lowercase; input case is not normalized for parsing", () => {
   }
 });
 
-test("registry has exactly the v1+console+skills commands with descriptions", () => {
+test("registry has exactly the v1+console+skills+mcp commands with descriptions", () => {
   assert.deepEqual(
     COMMANDS.map((c) => c.name),
-    ["models", "built-ins", "skills", "verbose", "rename", "help", "console"],
+    [
+      "models",
+      "built-ins",
+      "mcp",
+      "skills",
+      "verbose",
+      "rename",
+      "help",
+      "console",
+    ],
   );
   for (const command of COMMANDS) {
     assert.equal(typeof command.description, "string");
@@ -185,5 +212,43 @@ test("console command is registered and /help will list it", () => {
   assert.ok(
     helpText.includes("/console — open the devtools console popup"),
     `/help must list /console, got ${JSON.stringify(helpText)}`,
+  );
+});
+
+// item54: /mcp is the mirror of /built-ins for the panel MCP tree.
+test("/mcp is registered, parses without args, and /help will list it", () => {
+  const mcpCommand = COMMANDS.find((c) => c.name === "mcp");
+  if (!mcpCommand) throw new Error("mcp command missing from the registry");
+  assert.equal(
+    mcpCommand.description,
+    "show the MCP servers with on/off toggles",
+  );
+  assert.equal(mcpCommand.argsRequired, undefined, "mcp takes no args");
+  assert.deepEqual(parseInput("/mcp"), {
+    kind: "command",
+    name: "mcp",
+    args: "",
+  });
+  assert.deepEqual(parseInput("/mcp extra"), {
+    kind: "command",
+    name: "mcp",
+    args: "extra",
+  });
+  // The /help runner joins the registry, so /mcp flows into the help text.
+  const helpText = COMMANDS.map(
+    (command) => `/${command.name} — ${command.description}`,
+  ).join("\n");
+  assert.ok(
+    helpText.includes("/mcp — show the MCP servers with on/off toggles"),
+    `/help must list /mcp, got ${JSON.stringify(helpText)}`,
+  );
+  // Menu filtering: /m matches both /models and /mcp.
+  assert.deepEqual(
+    filterCommands("m").map((c) => c.name),
+    ["models", "mcp"],
+  );
+  assert.deepEqual(
+    filterCommands("mc").map((c) => c.name),
+    ["mcp"],
   );
 });

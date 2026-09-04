@@ -96,6 +96,14 @@ enum SessionAction {
     List,
 }
 
+/// Swappable session (item54): the rollout and its id behind a lock so
+/// POST /api/session/reset can start a fresh session in place (AppState is
+/// cloned per request; the swap must be visible to every later reader).
+struct SessionHandle {
+    rollout: Arc<Rollout>,
+    session_id: String,
+}
+
 /// Swappable agent runtime shared behind a lock so a /api/model swap is
 /// visible to every handler clone and to every subsequent WS prompt run
 /// (AppState is cloned per request, so the swappable state must live behind
@@ -184,8 +192,8 @@ struct AppState {
     /// Swappable model/agent/system-prompt state (see [`Runtime`]).
     runtime: Arc<RwLock<Runtime>>,
     verbose: u8,
-    rollout: Arc<Rollout>,
-    session_id: String,
+    /// Swappable session: rollout + id behind a lock (see [`SessionHandle`]).
+    session: Arc<RwLock<SessionHandle>>,
     /// Registry clone sharing tool instances and suppression state with the
     /// agent's registry (both fields are Arc-backed in `ToolRegistry`).
     registry: ToolRegistry,
@@ -193,18 +201,44 @@ struct AppState {
     /// (`<sessions_dir>/agent-state/<uuid>/messages.json`), the same files
     /// the agent persists via `FileSessionManager`.
     agent_state_dir: PathBuf,
+    /// Settings file this server reads/writes (item54 test seam: tests point
+    /// it at a temp file; production uses `.axonerai/settings.jsonc`).
+    settings_path: PathBuf,
 }
 
 impl AppState {
+    /// The current session rollout (clone of the Arc behind the lock).
+    fn rollout(&self) -> Arc<Rollout> {
+        self.session
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .rollout
+            .clone()
+    }
+
+    /// The current session id.
+    fn session_id(&self) -> String {
+        self.session
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .session_id
+            .clone()
+    }
+
+    /// Load the settings from this server's settings path.
+    fn load_settings(&self) -> Settings {
+        Settings::load_from(&self.settings_path)
+    }
+
     /// Durable-first append to the rollout.
     fn append_event(&self, value: &serde_json::Value) {
-        let _ = self.rollout.append_event(value);
+        let _ = self.rollout().append_event(value);
     }
 
     /// Raw-JSON variant of [`AppState::append_event`] (payload-last field
     /// order preserved on disk).
     fn append_json(&self, json: &str) {
-        let _ = self.rollout.append_json(json);
+        let _ = self.rollout().append_json(json);
     }
 }
 
@@ -335,29 +369,39 @@ fn resolve_session(
             Ok((Arc::new(rollout), id))
         }
         None => {
-            let id = uuid::Uuid::now_v7().to_string();
-            let title = std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "session".to_string());
-            let rollout = Rollout::create(sessions_dir, &id)?;
-            let meta_value = serde_json::to_value(&ServerMsg::SessionMeta {
-                session_id: id.as_str(),
-                title: title.as_str(),
-                created_at: now_ms(),
-            })
-            .unwrap_or_else(|_| {
-                serde_json::json!({
-                    "_type": "session_meta",
-                    "session_id": id.clone(),
-                    "title": title.clone(),
-                    "created_at": now_ms(),
-                })
-            });
-            rollout.append_event(&meta_value)?;
+            let (rollout, id) = fresh_session(sessions_dir)?;
             Ok((Arc::new(rollout), id))
         }
     }
+}
+
+/// Create a brand-new session: uuid v7, default title = rightmost cwd
+/// component, and a typed `ServerMsg::SessionMeta` event as the rollout's
+/// first line (the on-disk shape is identical to item25's provisional JSON
+/// line so existing rollouts stay readable). Shared by boot and by
+/// POST /api/session/reset (item54).
+fn fresh_session(sessions_dir: &std::path::Path) -> anyhow::Result<(Rollout, String)> {
+    let id = uuid::Uuid::now_v7().to_string();
+    let title = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "session".to_string());
+    let rollout = Rollout::create(sessions_dir, &id)?;
+    let meta_value = serde_json::to_value(&ServerMsg::SessionMeta {
+        session_id: id.as_str(),
+        title: title.as_str(),
+        created_at: now_ms(),
+    })
+    .unwrap_or_else(|_| {
+        serde_json::json!({
+            "_type": "session_meta",
+            "session_id": id.clone(),
+            "title": title.clone(),
+            "created_at": now_ms(),
+        })
+    });
+    rollout.append_event(&meta_value)?;
+    Ok((rollout, id))
 }
 
 async fn serve(
@@ -426,10 +470,13 @@ async fn serve(
         sessions_dir: sessions_dir.clone(),
         runtime,
         verbose,
-        rollout: session_rollout,
-        session_id: session_id.clone(),
+        session: Arc::new(RwLock::new(SessionHandle {
+            rollout: session_rollout,
+            session_id: session_id.clone(),
+        })),
         registry,
         agent_state_dir,
+        settings_path: PathBuf::from(axonerai::settings::DEFAULT_SETTINGS_PATH),
     };
 
     let assets_dir = state.web_root.join("assets");
@@ -438,27 +485,11 @@ async fn serve(
     let test_service = tower_http::services::ServeDir::new(state.web_root.join("test"));
     let generated_service = tower_http::services::ServeDir::new(state.web_root.join("generated"));
 
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/index.html", get(index))
-        .route("/console.html", get(console_page))
-        .route("/ws", get(ws_upgrade))
-        .route("/api/sessions", get(api_sessions))
-        .route("/api/session/:uuid", get(api_session_catchup))
-        .route("/api/session/:uuid/tail", get(api_session_tail))
-        .route("/api/state", get(api_state))
-        .route("/api/models", get(api_models))
-        .route("/api/skills", get(api_skills))
-        .route("/api/tools", post(api_tools_toggle))
-        .route("/api/mcp", post(api_mcp_toggle))
-        .route("/api/model", post(api_model_swap))
-        .route("/openapi.yaml", get(openapi_yaml))
+    let app = build_router(state.clone())
         .nest_service("/assets", assets_service)
         .nest_service("/src", src_service)
         .nest_service("/test", test_service)
-        .nest_service("/generated", generated_service)
-        .fallback(get(index))
-        .with_state(state.clone());
+        .nest_service("/generated", generated_service);
 
     let bind_addr: SocketAddr = format!("{host}:{port}")
         .parse()
@@ -559,6 +590,31 @@ fn format_updated(updated_ms: u64) -> String {
     }
 }
 
+/// The REST + WS routes (shared by `serve` and the tests, which construct
+/// the router to prove every route registers without a matchit conflict —
+/// e.g. static `/api/session/reset` next to parameterized
+/// `/api/session/:uuid`).
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/index.html", get(index))
+        .route("/console.html", get(console_page))
+        .route("/ws", get(ws_upgrade))
+        .route("/api/sessions", get(api_sessions))
+        .route("/api/session/reset", post(api_session_reset))
+        .route("/api/session/:uuid", get(api_session_catchup))
+        .route("/api/session/:uuid/tail", get(api_session_tail))
+        .route("/api/state", get(api_state))
+        .route("/api/models", get(api_models))
+        .route("/api/skills", get(api_skills))
+        .route("/api/tools", post(api_tools_toggle))
+        .route("/api/mcp", post(api_mcp_toggle))
+        .route("/api/model", post(api_model_swap))
+        .route("/openapi.yaml", get(openapi_yaml))
+        .fallback(get(index))
+        .with_state(state)
+}
+
 async fn index(State(state): State<AppState>) -> Response {
     let disk_path = state.web_root.join("index.html");
 
@@ -641,17 +697,15 @@ struct StateSnapshot {
 /// session up in the sessions index (last `session_rename` wins), falling
 /// back to the meta-only scan, then the session id.
 fn session_title(state: &AppState) -> String {
-    if let Some(dir) = state.rollout.path().parent() {
+    let session_id = state.session_id();
+    if let Some(dir) = state.rollout().path().parent() {
         if let Ok(sessions) = rollout::sessions_index(dir) {
-            if let Some(info) = sessions.iter().find(|s| s.uuid == state.session_id) {
+            if let Some(info) = sessions.iter().find(|s| s.uuid == session_id) {
                 return info.title.clone();
             }
         }
     }
-    state
-        .rollout
-        .title()
-        .unwrap_or_else(|_| state.session_id.clone())
+    state.rollout().title().unwrap_or_else(|_| session_id)
 }
 
 /// GET /api/state — provider/model/session/repo/context/tools/mcp snapshot.
@@ -677,7 +731,7 @@ fn state_snapshot(state: &AppState) -> StateSnapshot {
         provider: state.provider.clone(),
         model: runtime.model.clone(),
         session: SessionSnapshot {
-            id: state.session_id.clone(),
+            id: state.session_id(),
             title,
         },
         repo: RepoSnapshot {
@@ -687,7 +741,7 @@ fn state_snapshot(state: &AppState) -> StateSnapshot {
         context: ContextSnapshot {
             tokens: context_tokens_on_disk(
                 &state.agent_state_dir,
-                &state.session_id,
+                &state.session_id(),
                 runtime.system_prompt.as_deref(),
             ),
             context_window: state.models_cfg.context_window(&runtime.model),
@@ -802,9 +856,13 @@ struct ModelsQuery {
 /// `~/.axonerai/skills` and the built-in skills shipped in the binary
 /// (LOCAL MASKS USER MASKS BUILTIN; item49 + item50). Missing-safe: a
 /// missing dir contributes nothing; a broken SKILL.md is skipped server-side
-/// with a stderr note.
-async fn api_skills() -> Response {
-    Json(axonerai::skills::list_skills()).into_response()
+/// with a stderr note. item54: built-ins named in the settings
+/// `disabled_skills` list are dropped from the listing (source builtin ONLY
+/// — local/user folder skills of the same name are unaffected).
+async fn api_skills(State(state): State<AppState>) -> Response {
+    let disabled: std::collections::HashSet<String> =
+        state.load_settings().disabled_skills.into_iter().collect();
+    Json(axonerai::skills::list_skills_filtered(&disabled)).into_response()
 }
 
 // --- Tool toggle (POST /api/tools) -----------------------------------------
@@ -831,10 +889,12 @@ async fn api_tools_toggle(
 
     state.registry.set_suppressed(&body.name, body.enabled);
 
-    let settings = Settings {
-        suppressed_tools: state.registry.suppressed_names(),
-    };
-    if let Err(e) = settings.save() {
+    // Load-modify-save: a full-settings rewrite must never reset the other
+    // keys (item54 mcp_toggle_persist / disabled_mcp_servers /
+    // disabled_skills).
+    let mut settings = state.load_settings();
+    settings.suppressed_tools = state.registry.suppressed_names();
+    if let Err(e) = settings.save_to(&state.settings_path) {
         warn!("failed to persist settings: {e}");
     }
 
@@ -857,12 +917,16 @@ struct McpToggleBody {
 /// shape as /api/tools); the accepted set is exactly the servers with
 /// registered facade tools (`registry.mcp_servers()`).
 ///
-/// Restart semantics: unlike /api/tools, MCP toggles are NOT persisted to
+/// Restart semantics: by DEFAULT the MCP toggles are NOT persisted to
 /// settings.jsonc — the BROWSER is the durable store (per-folder
 /// localStorage, see web/src/mcp-prefs.mjs) and re-applies the stored
 /// disabled servers by POSTing each one on boot. A server restart therefore
 /// re-exposes all MCP tools until the browser reconnects and re-applies its
-/// preference.
+/// preference. item54 opt-in: when settings.jsonc sets
+/// `"mcp_toggle_persist": true`, the toggle ALSO persists the server to
+/// `disabled_mcp_servers` (load-modify-save; a re-enable removes it) so a
+/// restart honours it without a browser re-apply — `build_registry` seeds
+/// the suppression from that list at boot.
 async fn api_mcp_toggle(
     State(state): State<AppState>,
     Json(body): Json<McpToggleBody>,
@@ -878,6 +942,20 @@ async fn api_mcp_toggle(
     state
         .registry
         .set_mcp_suppressed(&body.server, body.enabled);
+
+    // item54: server-side persistence is opt-in via the settings flag.
+    let mut settings = state.load_settings();
+    if settings.mcp_toggle_persist {
+        if body.enabled {
+            settings.disabled_mcp_servers.retain(|s| *s != body.server);
+        } else if !settings.disabled_mcp_servers.contains(&body.server) {
+            settings.disabled_mcp_servers.push(body.server.clone());
+            settings.disabled_mcp_servers.sort();
+        }
+        if let Err(e) = settings.save_to(&state.settings_path) {
+            warn!("failed to persist mcp toggle: {e}");
+        }
+    }
 
     Json(serde_json::json!({"ok": true})).into_response()
 }
@@ -939,7 +1017,7 @@ async fn api_model_swap(
         &body.model,
         state.registry.clone(),
         &state.sessions_dir,
-        &state.session_id,
+        &state.session_id(),
         system_prompt.clone(),
     )
     .ok();
@@ -949,6 +1027,63 @@ async fn api_model_swap(
         runtime.model = body.model.clone();
         runtime.system_prompt = system_prompt;
         runtime.agent = agent;
+    }
+
+    Json(state_snapshot(&state)).into_response()
+}
+
+// --- Session reset (POST /api/session/reset) ---------------------------------
+
+/// POST /api/session/reset — start a FRESH session without a server restart
+/// (item54, the REST-idiomatic eval seam): mints a new uuid v7 session +
+/// rollout (session_meta first line, same shape as boot), rebuilds the agent
+/// against the new per-session agent-state dir, and swaps both into the
+/// shared session lock behind [`SessionHandle`]. Provider/model and the tool
+/// registry (suppression state included) are untouched. Responds with the
+/// updated /api/state snapshot. Repeat eval runs call this instead of
+/// restarting the server; the reset is NOT persisted — a restart follows the
+/// ordinary `--continue`/`--session`/boot semantics.
+async fn api_session_reset(State(state): State<AppState>) -> Response {
+    let (rollout, session_id) = match fresh_session(&state.sessions_dir) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+
+    // Rebuild the agent for the new session id (same provider/model and
+    // system prompt — only the per-session FileSessionManager changes).
+    let (model, system_prompt) = {
+        let runtime = state.runtime.read().unwrap();
+        (runtime.model.clone(), runtime.system_prompt.clone())
+    };
+    let agent = build_agent_from_config(
+        &state.config,
+        &state.provider,
+        &model,
+        state.registry.clone(),
+        &state.sessions_dir,
+        &session_id,
+        system_prompt,
+    )
+    .ok();
+    {
+        let mut runtime = state.runtime.write().unwrap();
+        runtime.agent = agent;
+    }
+    {
+        let mut session = state
+            .session
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *session = SessionHandle {
+            rollout: Arc::new(rollout),
+            session_id,
+        };
     }
 
     Json(state_snapshot(&state)).into_response()
@@ -1066,7 +1201,7 @@ async fn ws_upgrade(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl
 }
 
 async fn ws_session(state: AppState, mut socket: WebSocket) {
-    info!("[{}] ws client connected", state.session_id);
+    info!("[{}] ws client connected", state.session_id());
 
     // Outbound frames produced by spawned tasks (tool-trace forwarder, agent
     // run) flow through this channel; the main select loop writes them to the
@@ -1088,19 +1223,20 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
     // Fresh sessions already carry a session_meta line (written at creation
     // in resolve_session); reopenings get one appended here so the frame is
     // durable too.
+    let session_id = state.session_id();
     let meta_title = state
-        .rollout
+        .rollout()
         .title()
-        .unwrap_or_else(|_| state.session_id.clone());
+        .unwrap_or_else(|_| session_id.clone());
     let meta_value = serde_json::to_value(&ServerMsg::SessionMeta {
-        session_id: &state.session_id,
+        session_id: &session_id,
         title: &meta_title,
         created_at: now_ms(),
     })
     .unwrap_or_else(|_| {
         serde_json::json!({
             "_type": "session_meta",
-            "session_id": state.session_id,
+            "session_id": session_id,
             "title": meta_title,
             "created_at": now_ms(),
         })
@@ -1223,6 +1359,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                 tokio::sync::mpsc::unbounded_channel::<ToolTrace>();
                             let fwd_state = state.clone();
                             let fwd_out = out_tx.clone();
+                            let fwd_session_id = state.session_id();
                             tokio::spawn(async move {
                                 while let Some(trace) = trace_rx.recv().await {
                                     let args_pretty = rollout::abridge(
@@ -1235,7 +1372,7 @@ async fn ws_session(state: AppState, mut socket: WebSocket) {
                                     );
                                     let frame = match serde_json::to_string(&ServerMsg::ToolCall {
                                         id: None,
-                                        session_id: &fwd_state.session_id,
+                                        session_id: &fwd_session_id,
                                         tool: &trace.tool,
                                         args_pretty: &args_pretty,
                                         result_pretty: &result_pretty,
@@ -1395,10 +1532,15 @@ fn build_registry() -> ToolRegistry {
     }
 
     // Seed per-tool suppression from the persisted settings so a restart
-    // restores the previous on/off state.
+    // restores the previous on/off state. item54: persisted disabled MCP
+    // servers (written only when `mcp_toggle_persist` is on) seed the same
+    // way; unknown servers are a no-op.
     let settings = Settings::load();
     for name in &settings.suppressed_tools {
         registry.set_suppressed(name, false);
+    }
+    for server in &settings.disabled_mcp_servers {
+        registry.set_mcp_suppressed(server, false);
     }
 
     registry
@@ -1613,11 +1755,22 @@ mod tests {
                 system_prompt: None,
             })),
             verbose: 0,
-            rollout: Arc::new(rollout),
-            session_id,
+            session: Arc::new(RwLock::new(SessionHandle {
+                rollout: Arc::new(rollout),
+                session_id,
+            })),
             registry,
             agent_state_dir: dir.join("agent-state"),
+            settings_path: dir.join("settings.jsonc"),
         }
+    }
+
+    /// [`test_state`] with a settings file pre-seeded from `jsonc` (item54
+    /// test seam: the state's settings_path points at the temp file).
+    fn test_state_with_settings(registry: ToolRegistry, jsonc: &str) -> AppState {
+        let state = test_state_with(registry);
+        std::fs::write(&state.settings_path, jsonc).expect("write settings");
+        state
     }
 
     #[tokio::test]
@@ -1638,7 +1791,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["model"], "mistral-medium-latest");
         assert_eq!(json["provider"], "mistral");
-        assert_eq!(json["session"]["id"], state.session_id);
+        assert_eq!(json["session"]["id"], state.session_id());
 
         // The swap is visible to any later reader of the shared runtime: the
         // next prompt run rebuilds from this and /api/state reports it.
@@ -1746,7 +1899,7 @@ mod tests {
     /// neither config knows the id.
     #[tokio::test]
     async fn api_model_swap_accepts_models_config_only_ids() {
-        let mut state = test_state();
+        let state = test_state();
         // Extend the models config (not the roster) with a new model id.
         let new_body = r#"{
             "provider": "mistral",
@@ -1808,7 +1961,8 @@ mod tests {
     /// names asserted here come from the repo/binary itself.
     #[tokio::test]
     async fn api_skills_lists_local_repo_skills() {
-        let response = api_skills().await;
+        let state = test_state();
+        let response = api_skills(State(state)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -1844,6 +1998,39 @@ mod tests {
                 .starts_with("skills/builtin/"),
             "the builtin points at its in-code source: {deepresearch}"
         );
+    }
+
+    // --- item54: per-skill activation toggles (GET /api/skills) --------------
+
+    /// A builtin named in settings `disabled_skills` is dropped from the
+    /// /api/skills listing; local folder skills are untouched.
+    #[tokio::test]
+    async fn api_skills_drops_settings_disabled_builtins_only() {
+        let state = test_state_with_settings(
+            build_registry(),
+            r#"{ "disabled_skills": ["deepresearch", "no-such-builtin"] }"#,
+        );
+
+        let response = api_skills(State(state)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let skills = json.as_array().expect("a JSON array of skill entries");
+
+        assert!(
+            !skills.iter().any(|s| s["name"] == "deepresearch"),
+            "the disabled builtin must not be listed: {json}"
+        );
+        // Local folder skills are unaffected (repo .axonerai/skills).
+        for expected in ["greeting", "lint", "update-model-costs"] {
+            let entry = skills
+                .iter()
+                .find(|s| s["name"] == expected)
+                .unwrap_or_else(|| panic!("local skill {expected} missing from {json}"));
+            assert_eq!(entry["source"], "local", "{expected} unaffected");
+        }
     }
 
     // --- item48: MCP server toggle (POST /api/mcp) ---------------------------
@@ -1954,5 +2141,190 @@ mod tests {
             state_snapshot(&state).mcp.iter().all(|m| m.enabled),
             "no server was suppressed"
         );
+    }
+
+    // --- item54 part 1: opt-in MCP toggle persistence (POST /api/mcp) -------
+
+    /// Flag OFF (default): a POST /api/mcp disable applies session
+    /// suppression but does NOT touch settings.jsonc — the browser stays
+    /// the durable store.
+    #[tokio::test]
+    async fn api_mcp_toggle_without_persist_flag_writes_nothing() {
+        let state = test_state_with_settings(
+            mcp_test_registry(),
+            r#"{ "suppressed_tools": ["WebSearch"] }"#,
+        );
+        let before =
+            std::fs::read_to_string(&state.settings_path).expect("seeded settings readable");
+
+        let response = api_mcp_toggle(
+            State(state.clone()),
+            Json(McpToggleBody {
+                server: "tavily".to_string(),
+                enabled: false,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            !state.registry.mcp_server_enabled("tavily"),
+            "session suppression applied"
+        );
+
+        let after = std::fs::read_to_string(&state.settings_path).expect("settings readable");
+        assert_eq!(before, after, "flag off → settings untouched");
+        let settings = Settings::load_from(&state.settings_path);
+        assert!(settings.disabled_mcp_servers.is_empty());
+        assert!(!settings.mcp_toggle_persist);
+    }
+
+    /// Flag ON: the toggle ALSO persists to settings.jsonc (disable adds,
+    /// re-enable removes), the other keys survive, and a fresh registry
+    /// seeds the suppression from the persisted list.
+    #[tokio::test]
+    async fn api_mcp_toggle_with_persist_flag_round_trips() {
+        let state = test_state_with_settings(
+            mcp_test_registry(),
+            r#"{
+                // comments stay valid JSONC
+                "suppressed_tools": ["WebSearch"],
+                "mcp_toggle_persist": true,
+                "disabled_skills": ["no-such-builtin"]
+            }"#,
+        );
+
+        // Disable tavily → persisted.
+        let response = api_mcp_toggle(
+            State(state.clone()),
+            Json(McpToggleBody {
+                server: "tavily".to_string(),
+                enabled: false,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let settings = Settings::load_from(&state.settings_path);
+        assert!(settings.mcp_toggle_persist, "flag survives the rewrite");
+        assert_eq!(
+            settings.suppressed_tools,
+            vec!["WebSearch".to_string()],
+            "other keys survive"
+        );
+        assert_eq!(
+            settings.disabled_skills,
+            vec!["no-such-builtin".to_string()]
+        );
+        assert_eq!(
+            settings.disabled_mcp_servers,
+            vec!["tavily".to_string()],
+            "the disabled server is persisted"
+        );
+
+        // Re-enable → removed again.
+        let response = api_mcp_toggle(
+            State(state.clone()),
+            Json(McpToggleBody {
+                server: "tavily".to_string(),
+                enabled: true,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let settings = Settings::load_from(&state.settings_path);
+        assert!(
+            settings.disabled_mcp_servers.is_empty(),
+            "re-enable removes the persisted entry"
+        );
+
+        // A fresh registry seeds the suppression from the persisted list —
+        // restart semantics with the flag on.
+        let registry = mcp_test_registry();
+        let settings = Settings {
+            disabled_mcp_servers: vec!["tavily".to_string(), "unknown".to_string()],
+            ..Settings::load_from(&state.settings_path)
+        };
+        for server in &settings.disabled_mcp_servers {
+            registry.set_mcp_suppressed(server, false);
+        }
+        assert!(!registry.mcp_server_enabled("tavily"), "seeded disabled");
+        assert!(
+            registry.mcp_server_enabled("context7"),
+            "the other server stays enabled"
+        );
+        assert_eq!(registry.get_all_for_llm().len(), 3);
+        // An unknown persisted server is a no-op (no tools to suppress).
+        assert!(registry.mcp_servers().contains(&"tavily".to_string()));
+    }
+
+    // --- item54 part 4: fresh session for repeat evals (POST /api/session/reset)
+
+    /// POST /api/session/reset starts a FRESH session in place: a new uuid,
+    /// a new rollout whose first line is a session_meta, the agent rebuilt
+    /// against the new per-session agent-state dir, and the returned
+    /// snapshot reporting the new id. Repeat resets keep minting new ids.
+    #[tokio::test]
+    async fn api_session_reset_starts_a_fresh_session() {
+        let state = test_state();
+        let old_id = state.session_id();
+
+        let response = api_session_reset(State(state.clone())).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let new_id = json["session"]["id"].as_str().expect("session id");
+        assert_ne!(new_id, old_id, "a fresh session id is minted");
+        assert_eq!(json["session"]["id"], state.session_id());
+        assert_eq!(
+            json["model"], "zai-glm-5-2",
+            "provider/model are untouched by a reset"
+        );
+        assert!(
+            axonerai::rollout::is_session_id(new_id),
+            "the new id is a lowercase uuid v7"
+        );
+
+        // The new rollout exists with a session_meta first line.
+        let rollout = axonerai::rollout::Rollout::open(&state.sessions_dir, new_id)
+            .expect("the fresh rollout exists");
+        let title = rollout.title().expect("a session_meta line is present");
+        assert_eq!(
+            title, "axonerai",
+            "default title = rightmost cwd component (cargo test cwd = crate root)"
+        );
+
+        // The agent was rebuilt against the new session (agent-state dir).
+        let runtime = state.runtime.read().unwrap();
+        let agent = runtime.agent.as_ref().expect("agent rebuilt");
+        assert_eq!(
+            agent.session_id().expect("session-backed agent"),
+            new_id,
+            "the agent's session manager points at the fresh session"
+        );
+        drop(runtime);
+
+        // Repeat resets keep minting fresh sessions.
+        let second = api_session_reset(State(state.clone())).await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_ne!(
+            json["session"]["id"].as_str().expect("id"),
+            new_id,
+            "each reset is a new session"
+        );
+    }
+
+    /// The router accepts POST /api/session/reset alongside the
+    /// parameterized GET /api/session/:uuid (static segments win).
+    #[tokio::test]
+    async fn router_registers_the_session_reset_route() {
+        let state = test_state();
+        let _router = build_router(state);
     }
 }

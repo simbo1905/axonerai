@@ -332,10 +332,7 @@ mod tests {
 
     #[cfg(unix)]
     fn capture_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "axoner-oneshot-stdout-{}",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("axoner-oneshot-stdout-{}", std::process::id()))
     }
 
     #[cfg(unix)]

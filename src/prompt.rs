@@ -9,12 +9,14 @@
 //! item50: on top of the model patch, every built-in skill that declares a
 //! frontmatter prompt patch (`system-prompt-prepend` / `-append` / `-replace`,
 //! see src/skills.rs) is applied at agent-build time, in deterministic
-//! name-sorted order. Built-in skills are always active (they ship with the
-//! binary); folder skills (local/user) never contribute patches.
+//! name-sorted order. Built-in skills are active unless disabled in settings
+//! (item54 `disabled_skills`, src/settings.rs); folder skills (local/user)
+//! never contribute patches.
 
+use std::collections::HashSet;
 use std::path::Path;
 
-use crate::builtin_skills::prompt_patches;
+use crate::builtin_skills::prompt_patches_excluding;
 use crate::skills::PromptPatch;
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../prompts/generated/default.txt");
@@ -46,13 +48,18 @@ pub fn compose_system_prompt(base: &str, patches: &[(String, PromptPatch)]) -> S
 /// Load the system prompt for a provider+model pair: the generated
 /// `prompts/generated/<provider>--<model>.txt` when present, else the embedded
 /// default prompt — then every built-in skill's prompt patch composed on top,
-/// name-sorted (item50).
+/// name-sorted (item50), minus the settings-disabled built-ins (item54
+/// `disabled_skills`).
 pub fn load_system_prompt(provider: &str, model: &str) -> String {
     let base = match std::fs::read_to_string(prompt_path(provider, model)) {
         Ok(contents) => contents,
         Err(_) => DEFAULT_SYSTEM_PROMPT.to_string(),
     };
-    compose_system_prompt(&base, &prompt_patches())
+    let disabled: HashSet<String> = crate::settings::Settings::load()
+        .disabled_skills
+        .into_iter()
+        .collect();
+    compose_system_prompt(&base, &prompt_patches_excluding(&disabled))
 }
 
 #[cfg(test)]

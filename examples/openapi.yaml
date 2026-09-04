@@ -71,7 +71,10 @@ paths:
         a higher-precedence source is listed once, sourced from the winner.
         Missing-safe: a missing dir contributes nothing; an unreadable or
         unparsable SKILL.md is skipped (with a server-side stderr note),
-        never an error. Sorted by name.
+        never an error. Sorted by name. item54: built-ins named in the
+        settings `disabled_skills` list are dropped from the listing
+        (builtin source ONLY — local/user folder skills of the same name
+        are unaffected).
       responses:
         "200":
           description: Skill entries, sorted by name
@@ -128,12 +131,15 @@ paths:
       description: >
         The panel-level MCP toggle (item48): applies per-tool suppression to
         every registered MCP tool of that server, so a disabled server's
-        tools are hidden from the model for this session. NOT persisted
-        server-side — the browser is the durable store (per-folder
-        localStorage) and re-applies the stored disabled servers on boot; a
-        server restart re-exposes all MCP tools until the browser
-        reconnects. Unknown server (one with no registered facade tools) →
-        400.
+        tools are hidden from the model for this session. By DEFAULT the
+        toggle is NOT persisted server-side — the browser is the durable
+        store (per-folder localStorage) and re-applies the stored disabled
+        servers on boot; a server restart re-exposes all MCP tools until the
+        browser reconnects. item54 opt-in: when the settings file sets
+        `"mcp_toggle_persist": true`, the toggle ALSO persists the server to
+        `disabled_mcp_servers` in `.axonerai/settings.jsonc` (a re-enable
+        removes it) so a restart honours it without a browser re-apply.
+        Unknown server (one with no registered facade tools) → 400.
       requestBody:
         required: true
         content:
@@ -218,6 +224,40 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SessionInfo"
+
+  /api/session/reset:
+    post:
+      summary: Start a fresh session
+      description: >
+        item54 (eval support): mints a new uuid v7 session and rollout
+        (a session_meta line is written as its first event), rebuilds the
+        agent against the new per-session agent-state dir, and swaps both
+        into the shared session lock — all WITHOUT a server restart.
+        Provider/model and the tool registry (suppression state included)
+        are untouched. Responds with the updated state snapshot; repeat
+        eval runs call this between runs instead of restarting the server.
+        The reset itself is not persisted — a restart follows the ordinary
+        `--continue`/`--session`/boot semantics.
+      responses:
+        "200":
+          description: Fresh session started; updated snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StateSnapshot"
+        "500":
+          description: The fresh rollout could not be created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    const: false
+                  error:
+                    type: string
+                required: [ok, error]
 
   /api/session/{uuid}:
     get:

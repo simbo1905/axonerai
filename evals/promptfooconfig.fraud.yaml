@@ -1,3 +1,4 @@
+# item54: repeat runs get a fresh session via POST http://127.0.0.1:<port>/api/session/reset — no server restart needed.
 # item36 Part B — fraud-proof evals: prove the AGENT DOES THE THING on the wire.
 #
 # Run from the repo root (two live axoner-web servers on item36's own ports,

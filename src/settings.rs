@@ -8,12 +8,28 @@ use std::path::Path;
 
 pub const DEFAULT_SETTINGS_PATH: &str = ".axonerai/settings.jsonc";
 
-/// User-level tool settings. Currently only per-tool suppression, but the
+/// User-level tool settings. Currently per-tool suppression, the item54
+/// opt-in MCP persistence flag/lists and disabled built-in skills — the
 /// shape is deliberately flat and forward-compatible.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Settings {
     #[serde(default)]
     pub suppressed_tools: Vec<String>,
+    /// item54: when `true`, POST /api/mcp ALSO persists the disabled MCP
+    /// server to `disabled_mcp_servers` so a restart honours it without a
+    /// browser re-apply. Default `false` — the browser (per-folder
+    /// localStorage) stays the durable store.
+    #[serde(default)]
+    pub mcp_toggle_persist: bool,
+    /// item54: MCP servers persisted as disabled (only written when
+    /// `mcp_toggle_persist` is on); registry boot seeds suppression from it.
+    #[serde(default)]
+    pub disabled_mcp_servers: Vec<String>,
+    /// item54: built-in skills deactivated by name. A disabled builtin is
+    /// dropped from prompt-patch composition AND the /api/skills listing;
+    /// local/user folder skills are unaffected.
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
 }
 
 impl Settings {
@@ -91,6 +107,9 @@ mod tests {
         let path = temp_path("roundtrip");
         let settings = Settings {
             suppressed_tools: vec!["WebSearch".to_string(), "tavily_search".to_string()],
+            mcp_toggle_persist: true,
+            disabled_mcp_servers: vec!["tavily".to_string()],
+            disabled_skills: vec!["deepresearch".to_string()],
         };
         settings.save_to(&path).expect("save should succeed");
 
@@ -99,6 +118,23 @@ mod tests {
             loaded.suppressed_tools,
             vec!["WebSearch".to_string(), "tavily_search".to_string()]
         );
+        assert!(loaded.mcp_toggle_persist);
+        assert_eq!(loaded.disabled_mcp_servers, vec!["tavily".to_string()]);
+        assert_eq!(loaded.disabled_skills, vec!["deepresearch".to_string()]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn new_item54_fields_default_when_absent() {
+        // A pre-item54 settings file (suppressed_tools only) must load with
+        // the new fields defaulted, not error.
+        let path = temp_path("legacy");
+        std::fs::write(&path, r#"{ "suppressed_tools": ["WebSearch"] }"#).expect("write");
+        let loaded = Settings::load_from(&path);
+        assert_eq!(loaded.suppressed_tools, vec!["WebSearch".to_string()]);
+        assert!(!loaded.mcp_toggle_persist, "opt-in flag defaults off");
+        assert!(loaded.disabled_mcp_servers.is_empty());
+        assert!(loaded.disabled_skills.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -149,6 +185,7 @@ mod tests {
         let nested = base.join("sub").join("settings.jsonc");
         let settings = Settings {
             suppressed_tools: vec!["WebFetch".to_string()],
+            ..Default::default()
         };
         settings.save_to(&nested).expect("save should create dirs");
         assert!(nested.exists());

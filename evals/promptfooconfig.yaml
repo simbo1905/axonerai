@@ -1,3 +1,4 @@
+# item54: repeat runs get a fresh session via POST http://127.0.0.1:<port>/api/session/reset — no server restart needed.
 # promptfoo eval config for the 7-config provider x model matrix.
 # Run from the repo root: promptfoo eval -c evals/promptfooconfig.yaml --no-share
 description: agt provider x model matrix eval

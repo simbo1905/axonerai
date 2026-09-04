@@ -1,3 +1,4 @@
+# item54: repeat runs get a fresh session via POST http://127.0.0.1:<port>/api/session/reset — no server restart needed.
 # item49 — skills discovery + invocation evals (the /skills REST surface and
 # the ReadSkill read-only builtin).
 #

@@ -470,6 +470,14 @@ export class AgtPanel extends HTMLElement {
   }
 
   /**
+   * Expand the MCP tree (e.g. after running /mcp, item54) — the rows are
+   * the item48 per-server toggle rows rendered by setState().
+   */
+  openMcp() {
+    this.#sections.get("MCP")?.setCollapsed(false);
+  }
+
+  /**
    * Render the Skills tree (slash /skills, item49): one row per skill from
    * GET /api/skills — `name [source] — description` with the local/user
    * /builtin source tag (the server already applies

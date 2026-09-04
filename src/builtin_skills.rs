@@ -58,10 +58,23 @@ pub fn read_builtin(name: &str) -> Option<&'static str> {
 /// name-sorted for deterministic composition (src/prompt.rs). Skills with
 /// no patch fields are absent from the list — they are inert.
 pub fn prompt_patches() -> Vec<(String, PromptPatch)> {
+    prompt_patches_excluding(&std::collections::HashSet::new())
+}
+
+/// item54: [`prompt_patches`] with builtin-skill deactivation — a name in
+/// `disabled` drops that builtin's patch from composition (its /api/skills
+/// listing row is dropped separately, see src/skills.rs). Names that match
+/// no builtin are inert.
+pub fn prompt_patches_excluding(
+    disabled: &std::collections::HashSet<String>,
+) -> Vec<(String, PromptPatch)> {
     let mut patches: Vec<(String, PromptPatch)> = builtin_skills()
         .iter()
         .filter_map(|(_, content)| {
             let (name, _) = parse_frontmatter(content)?;
+            if disabled.contains(&name) {
+                return None;
+            }
             let patch = PromptPatch::from_fields(&parse_frontmatter_fields(content)?);
             if patch.is_empty() {
                 None
@@ -134,5 +147,32 @@ mod tests {
         let mut sorted = patches.clone();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(patches, sorted);
+    }
+
+    // ------------------------------------------------------- item54: toggles
+
+    #[test]
+    fn disabled_builtin_is_dropped_from_patch_composition() {
+        let disabled: std::collections::HashSet<String> =
+            ["deepresearch"].into_iter().map(str::to_string).collect();
+        assert!(
+            prompt_patches_excluding(&disabled).is_empty(),
+            "the only builtin is disabled → no patches compose"
+        );
+
+        // An unknown name is inert: the full patch list is untouched.
+        let unknown: std::collections::HashSet<String> =
+            ["no-such-skill"].into_iter().map(str::to_string).collect();
+        assert_eq!(
+            prompt_patches_excluding(&unknown),
+            prompt_patches(),
+            "disabling a nonexistent skill changes nothing"
+        );
+
+        // Case: the unfiltered list is the empty-disabled default.
+        assert_eq!(
+            prompt_patches_excluding(&Default::default()),
+            prompt_patches()
+        );
     }
 }

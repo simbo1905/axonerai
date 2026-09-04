@@ -205,6 +205,19 @@ fn list_dir_skills(dir: &Path, source: SkillSource) -> Vec<SkillEntry> {
 /// source appears once, sourced from the winner. Missing dirs are empty;
 /// the result is sorted by name for a deterministic listing.
 pub fn list_skills_from(local: &Path, user: &Path) -> Vec<SkillEntry> {
+    list_skills_from_filtered(local, user, &HashSet::new())
+}
+
+/// item54: [`list_skills_from`] with builtin-source deactivation. A name in
+/// `disabled` drops entries whose source is [`SkillSource::Builtin`] ONLY —
+/// local/user folder skills of the same name are unaffected (a folder skill
+/// shadowing a disabled builtin stays listed). Disabled names that match no
+/// builtin are inert.
+pub fn list_skills_from_filtered(
+    local: &Path,
+    user: &Path,
+    disabled: &HashSet<String>,
+) -> Vec<SkillEntry> {
     let local_entries = list_dir_skills(local, SkillSource::Local);
     let local_names: HashSet<String> = local_entries
         .iter()
@@ -218,7 +231,7 @@ pub fn list_skills_from(local: &Path, user: &Path) -> Vec<SkillEntry> {
     }
     let taken: HashSet<String> = all.iter().map(|entry| entry.name.clone()).collect();
     for entry in crate::builtin_skills::entries() {
-        if !taken.contains(&entry.name) {
+        if !taken.contains(&entry.name) && !disabled.contains(&entry.name) {
             all.push(entry);
         }
     }
@@ -229,6 +242,12 @@ pub fn list_skills_from(local: &Path, user: &Path) -> Vec<SkillEntry> {
 /// Convenience: list skills from the default dirs (cwd-local + `~`).
 pub fn list_skills() -> Vec<SkillEntry> {
     list_skills_from(&local_dir(), &user_dir())
+}
+
+/// item54: [`list_skills`] with builtin-source deactivation (see
+/// [`list_skills_from_filtered`]) — the /api/skills listing path.
+pub fn list_skills_filtered(disabled: &HashSet<String>) -> Vec<SkillEntry> {
+    list_skills_from_filtered(&local_dir(), &user_dir(), disabled)
 }
 
 /// Resolve one skill by name: `.axonerai/skills`, then `~/.axonerai/skills`,
@@ -444,6 +463,53 @@ mod tests {
             .map(|s| s.name.as_str())
             .collect();
         assert_eq!(names, vec!["good"], "broken entries skipped, good one kept");
+    }
+
+    // ------------------------------------------------------- item54: toggles
+
+    #[test]
+    fn disabled_builtin_dropped_but_folder_skills_unaffected() {
+        let root = temp_root("disabled");
+        let local_dir = root.join(".axonerai/skills");
+        let user_dir = root.join("home/.axonerai/skills");
+
+        let disabled: HashSet<String> = ["deepresearch"].into_iter().map(str::to_string).collect();
+
+        // With empty folders the disabled builtin disappears entirely.
+        let skills = list_skills_from_filtered(&local_dir, &user_dir, &disabled);
+        assert!(
+            !skills.iter().any(|s| s.name == "deepresearch"),
+            "disabled builtin must not be listed: {skills:?}"
+        );
+        // The unfiltered listing still has it (control).
+        assert!(
+            list_skills_from(&local_dir, &user_dir)
+                .iter()
+                .any(|s| s.name == "deepresearch")
+        );
+
+        // A local folder skill with the SAME name is unaffected: the
+        // disabled list only filters builtin-sourced entries.
+        write_skill(
+            &root,
+            "",
+            "deepresearch",
+            &skill_md("deepresearch", "local one"),
+        );
+        let skills = list_skills_from_filtered(&local_dir, &user_dir, &disabled);
+        let entry = skills
+            .iter()
+            .find(|s| s.name == "deepresearch")
+            .expect("local folder skill unaffected by the disabled builtin");
+        assert_eq!(entry.source, SkillSource::Local);
+        assert_eq!(entry.description, "local one");
+
+        // Disabling a nonexistent builtin is inert.
+        let unknown: HashSet<String> = ["no-such-skill"].into_iter().map(str::to_string).collect();
+        assert_eq!(
+            list_skills_from_filtered(&local_dir, &user_dir, &unknown),
+            list_skills_from(&local_dir, &user_dir)
+        );
     }
 
     #[test]

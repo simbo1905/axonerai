@@ -550,6 +550,15 @@ export class AgtApp extends HTMLElement {
         panel.openBuiltins();
         return;
       }
+      case "mcp": {
+        // item54: mirror of /built-ins — the MCP rows are already rendered
+        // from the /api/state snapshot (item48), so expanding the tree is
+        // all that is needed.
+        if (!this.#snapshot) await this.#fetchState();
+        console.log("[slash] mcp: opened the MCP tree");
+        panel.openMcp();
+        return;
+      }
       case "skills": {
         // item49: the skills listing is a plain REST read (same convention
         // as /api/models); a failure reports on the console bus and leaves

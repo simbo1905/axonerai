@@ -1,3 +1,4 @@
+# item54: repeat runs get a fresh session via POST http://127.0.0.1:<port>/api/session/reset — no server restart needed.
 # item50 — LIVE deepresearch eval (the flagship built-in skill).
 #
 # LIVE EVAL: this drives a REAL axoner-web server on mistral-medium-latest

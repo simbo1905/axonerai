@@ -335,3 +335,55 @@ async fn one_failing_one_succeeding_call_both_reported() {
     assert_eq!(traces[1].tool, "echo_tool");
     assert!(traces[1].result_json.contains("expression"));
 }
+
+// item54: the executor-level tool-round budget stops an over-fetching loop
+// with an honest final message instead of running to `max_iterations`.
+#[tokio::test]
+async fn tool_round_budget_stops_a_looping_provider_honestly() {
+    let requests = SharedRequests::default();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(EchoTool));
+
+    // A provider whose script never ends the turn: the last (ToolUse)
+    // response repeats forever — the over-FETCHING shape.
+    let mut agent = Agent::new(
+        Box::new(ScriptedProvider {
+            requests: requests.clone(),
+            script: vec![tool_response(vec![ToolCall {
+                id: "call_loop".to_string(),
+                name: "echo_tool".to_string(),
+                input: json!({"expression": "1"}),
+            }])],
+        }),
+        registry,
+        None,
+        None,
+    );
+    agent.set_tool_round_budget(3);
+
+    let answer = agent
+        .run_with_traces("loop forever", tx)
+        .await
+        .expect("a budget stop is a normal Ok(final) outcome");
+    assert_eq!(
+        answer, "stopped: tool round budget 3 reached",
+        "the final message must be honest about the stop reason"
+    );
+
+    // Exactly 3 provider calls: 3 executed tool rounds, and the 4th ToolUse
+    // response is never requested — the budget stopped BEFORE it.
+    assert_eq!(
+        requests.len(),
+        3,
+        "3 tool rounds, no request past the budget"
+    );
+
+    // One trace per executed tool call (3 rounds × 1 call).
+    let mut traces = Vec::new();
+    while let Ok(t) = rx.try_recv() {
+        traces.push(t);
+    }
+    assert_eq!(traces.len(), 3, "one trace per executed tool call");
+    assert!(traces.iter().all(|t| t.tool == "echo_tool"));
+}
