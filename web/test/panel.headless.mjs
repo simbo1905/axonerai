@@ -12,6 +12,10 @@
 // document.title becomes "panel-tests-done".
 import { validateAck, validateSession_meta } from "/generated/validators.mjs";
 import { deepFreeze, parseWireEventText } from "/src/wire.mjs";
+import {
+  init as initModelClient,
+  resetForTests as resetModelClientForTests,
+} from "../src/model-client.mjs";
 
 // ---------------------------------------------------------------- harness
 
@@ -88,7 +92,7 @@ async function waitFor(fn, what, timeout = 3000) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-// ------------------------------------------------- stored MCP prefs (item48)
+// ------------------------------------------------- stored prefs before boot
 
 // Seeded BEFORE agt-app is imported so the boot application path is
 // exercised: this fixture folder stores context7 disabled; a DIFFERENT
@@ -105,6 +109,20 @@ localStorage.setItem(
   JSON.stringify(["tavily"]),
 );
 
+// item59: seed the model client's DURABLE recency maps so the /model
+// popup sort is deterministic across runs (localStorage is durable per
+// origin — reruns overwrite these keys). mistral: codestral outranks the
+// current zai-glm-5-2; groq: gpt-oss outranks llama (both differ from the
+// roster order, proving recency — not roster index — drives the sort).
+localStorage.setItem(
+  "agt.model-recency:mistral",
+  JSON.stringify({ "codestral-latest": 3, "zai-glm-5-2": 2, "mistral-large-latest": 1 }),
+);
+localStorage.setItem(
+  "agt.model-recency:groq",
+  JSON.stringify({ "gpt-oss-120b": 5, "llama-3.3-70b": 2 }),
+);
+
 // ------------------------------------------------- stub fetch (before app)
 
 const realFetch = window.fetch.bind(window);
@@ -112,17 +130,55 @@ const realFetch = window.fetch.bind(window);
 /** @type {any} */
 let fixture = await (await realFetch("/test/fixtures/state.json")).json();
 
+/** @type {any[]} */
+const fixtureServices = await (
+  await realFetch("/test/fixtures/services.json")
+).json();
+
 /** @type {Array<{ name: string, enabled: boolean }>} */
 const postCalls = [];
 
 /** @type {Array<{ server: string, enabled: boolean }>} */
 const mcpPosts = [];
 
+/** @type {Array<{ service: string, model: string }>} */
+const modelPosts = [];
+
+/** When true the next POST /api/model answers 400 (item59 error-line test). */
+let failNextModelPost = false;
+
 window.fetch = /** @type {typeof window.fetch} */ (
   async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
     if (url === "/api/state") {
       return new Response(JSON.stringify(fixture), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === "/api/services") {
+      return new Response(JSON.stringify(fixtureServices), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === "/api/model" && init && init.method === "POST") {
+      // item59: the model client OWNS this POST; the stub emulates the
+      // server-side swap in the /api/state fixture and (optionally) a 400.
+      const body = /** @type {{ service: string, model: string }} */ (
+        JSON.parse(String(init.body))
+      );
+      modelPosts.push(body);
+      if (failNextModelPost) {
+        failNextModelPost = false;
+        return new Response(
+          JSON.stringify({ ok: false, error: "service 'groq' is disabled in settings" }),
+          { status: 400, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      fixture.service = body.service;
+      fixture.model = body.model;
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -252,6 +308,13 @@ window.AgtClient = {
       prompts,
       postCalls,
       mcpPosts,
+      modelPosts,
+      get failNextModelPost() {
+        return failNextModelPost;
+      },
+      set failNextModelPost(value) {
+        failNextModelPost = value;
+      },
     });
     captured.onOpen();
     await Promise.resolve();
@@ -285,8 +348,10 @@ window.AgtClient = {
 await import("/src/components/agt-app.js");
 
 const app = need(document.querySelector("agt-app"), "agt-app element missing");
+// Mounting awaits the model client's pre-mount init (item59), so the stub
+// client (and the whole component tree) lands asynchronously.
 const stub = /** @type {NonNullable<Window["__PANEL_STUB__"]>} */ (
-  window.__PANEL_STUB__
+  await waitFor(() => window.__PANEL_STUB__ ?? null, "stub client")
 );
 
 // ---------------------------------------------------------------- helpers
@@ -374,13 +439,33 @@ function ta() {
   );
 }
 
-/** @returns {HTMLElement} */
+/** @returns {HTMLElement} the composer's shared picker popup (item59). */
+function pickerEl() {
+  return need(
+    /** @type {HTMLElement | null} */ (
+      document.querySelector("agt-composer agt-picker-menu")
+    ),
+    "picker popup missing",
+  );
+}
+
+/** @returns {HTMLElement} the picker's listbox. */
 function menuEl() {
   return need(
     /** @type {HTMLElement | null} */ (
-      document.querySelector("agt-composer .slash-menu")
+      pickerEl().querySelector(".picker-menu")
     ),
-    "slash menu missing",
+    "picker listbox missing",
+  );
+}
+
+/** @returns {HTMLElement} the composer error line (item59). */
+function composerErrorEl() {
+  return need(
+    /** @type {HTMLElement | null} */ (
+      document.querySelector("agt-composer .composer-error")
+    ),
+    "composer error line missing",
   );
 }
 
@@ -542,16 +627,26 @@ await test("toggling an MCP row POSTs /api/mcp, updates the folder-scoped key, a
   );
 });
 
-await test("typing / opens the menu with all 8 commands", async () => {
+await test("typing / opens the picker popup with all 8 commands under a Commands header", async () => {
   await type("/");
   const menu = menuEl();
   assert(menu.hidden === false, "menu should be open after typing /");
+  // The slash menu rides the reusable picker (item59): one section named
+  // "Commands" with the registry as rows.
+  const headers = [...menu.querySelectorAll(".picker-header")];
+  assertEqual(headers.length, 1, "one section header");
+  assertEqual(headers[0].textContent, "Commands", "section header text");
+  assertEqual(
+    menu.querySelectorAll(".picker-gap").length,
+    0,
+    "no gap with a single section",
+  );
   const options = [...menu.querySelectorAll("[role=option]")];
   assertEqual(options.length, 8, "expected 8 commands in the menu");
   assertEqual(
     options.map((o) => o.textContent).join("|"),
     [
-      "/modelslist models for the current provider and switch",
+      "/modelswitch the running model (service + model picker)",
       "/built-insshow the built-in tools with on/off toggles",
       "/mcpshow the MCP servers with on/off toggles",
       "/skillslist available skills",
@@ -570,7 +665,7 @@ await test("typing / opens the menu with all 8 commands", async () => {
   );
   assertEqual(
     ta().getAttribute("aria-activedescendant"),
-    "agt-slash-opt-0",
+    "agt-slash-menu-opt-0",
     "aria-activedescendant",
   );
 });
@@ -582,20 +677,20 @@ await test("ArrowDown/ArrowUp move the highlight with wrap; Esc closes; input ke
   await pressKey("ArrowDown");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
-    "agt-slash-opt-1",
+    "agt-slash-menu-opt-1",
     "ArrowDown should move to the second option",
   );
   // Wrap is count-agnostic: N-1 more downs from index 1 land back on 0.
   for (let i = 0; i < optionCount - 1; i++) await pressKey("ArrowDown");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
-    "agt-slash-opt-0",
+    "agt-slash-menu-opt-0",
     "ArrowDown should wrap back to the first option",
   );
   await pressKey("ArrowUp");
   assertEqual(
     menu.querySelector("[aria-selected=true]")?.id,
-    `agt-slash-opt-${optionCount - 1}`,
+    `agt-slash-menu-opt-${optionCount - 1}`,
     "ArrowUp should wrap to the last option",
   );
   await pressKey("Escape");
@@ -857,6 +952,152 @@ await test("/console opens the popup via window.open (stubbed + asserted); a blo
   } finally {
     window.open = originalOpen;
   }
+});
+
+// --- item59: model domain — FYI Models tree, /model picker, swap, late arriver
+
+await test("Models tree renders the roster FYI-only: per-service sections, context windows, current mark", () => {
+  const text = sectionText("Models");
+  assert(
+    text.includes("mistral") && text.includes("groq"),
+    `per-service headers, got ${JSON.stringify(text)}`,
+  );
+  assert(
+    text.includes("✓ zai-glm-5-2 (33K)"),
+    `current model marked, got ${JSON.stringify(text)}`,
+  );
+  assert(
+    text.includes("codestral-latest (262K)") && text.includes("gpt-oss-120b (131K)"),
+    `context windows resolved from the roster, got ${JSON.stringify(text)}`,
+  );
+  // FYI-only (glossary: reusable-picker): no toggles, no click affordance in
+  // the tree body (the section header's collapse button is shared chrome).
+  assert(
+    section("Models").querySelectorAll(".agt-p-content input, .agt-p-content button")
+      .length === 0,
+    "Models tree body must have no interactive elements",
+  );
+});
+
+await test("/model opens the picker: per-service sections, recency sort, current mark", async () => {
+  await type("/model");
+  await pressKey("Enter");
+  const menu = menuEl();
+  const headers = [...menu.querySelectorAll(".picker-header")];
+  assertEqual(
+    headers.map((h) => h.textContent).join("|"),
+    "mistral|groq",
+    "sections follow the /api/services order",
+  );
+  assertEqual(
+    menu.querySelectorAll(".picker-gap").length,
+    1,
+    "a blank line between the two sections",
+  );
+  const options = [...menu.querySelectorAll("[role=option]")];
+  assertEqual(options.length, 5, "every rostered model rendered");
+  // Recency rank (highest first), NOT roster order: the seeded maps rank
+  // mistral codestral 3 > zai 2 > large 1 and groq gpt-oss 5 > llama 2.
+  assertEqual(
+    options.map((o) => /** @type {HTMLElement} */ (o).dataset.id).join("|"),
+    "codestral-latest|zai-glm-5-2|mistral-large-latest|gpt-oss-120b|llama-3.3-70b",
+    "models sorted by recency rank within their section",
+  );
+  const marked = [...menu.querySelectorAll(".picker-current-mark")];
+  assertEqual(marked.length, 1, "exactly one current mark");
+  assertEqual(
+    /** @type {HTMLElement} */ (marked[0].closest("[role=option]")).dataset.id,
+    "zai-glm-5-2",
+    "the running model is marked",
+  );
+  await pressKey("Escape");
+  assert(menu.hidden === true, "Escape closes the model picker");
+});
+
+await test("selecting a model POSTs {service, model} via the model client; footer + Models tree follow model_changed", async () => {
+  await type("/model");
+  await pressKey("Enter");
+  const options = [...menuEl().querySelectorAll("[role=option]")];
+  const codestral = need(
+    options.find((o) => /** @type {HTMLElement} */ (o).dataset.id === "codestral-latest"),
+    "codestral option missing",
+  );
+  codestral.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await waitFor(() => stub.modelPosts.length === 1, "POST /api/model call");
+  assertEqual(
+    JSON.stringify(stub.modelPosts[0]),
+    JSON.stringify({ service: "mistral", model: "codestral-latest" }),
+    "POST /api/model body",
+  );
+  assert(menuEl().hidden === true, "picker closed after the selection");
+  assertEqual(composerErrorEl().hidden, true, "no error line on success");
+  await waitFor(
+    () => footerLeftText() === "Chat · codestral-latest mistral · think off",
+    "footer follows model_changed",
+  );
+  await waitFor(
+    () => sectionText("Models").includes("✓ codestral-latest (262K)"),
+    "Models tree re-marks the new current model",
+  );
+  assert(
+    !sectionText("Models").includes("✓ zai-glm-5-2"),
+    "the old current mark is gone",
+  );
+});
+
+await test("a 400 from the swap surfaces in the composer error line and changes nothing", async () => {
+  const footerBefore = footerLeftText();
+  stub.failNextModelPost = true;
+  await type("/model");
+  await pressKey("Enter");
+  const options = [...menuEl().querySelectorAll("[role=option]")];
+  const llama = need(
+    options.find((o) => /** @type {HTMLElement} */ (o).dataset.id === "llama-3.3-70b"),
+    "llama option missing",
+  );
+  llama.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await waitFor(
+    () =>
+      composerErrorEl().hidden === false &&
+      composerErrorEl().textContent === "service 'groq' is disabled in settings",
+    "400 error surfaced in the composer error line",
+  );
+  assertEqual(stub.modelPosts.length, 2, "the POST was attempted");
+  assertEqual(footerLeftText(), footerBefore, "footer unchanged on failure");
+});
+
+await test("late arriver: a panel mounted before the model client init renders blank, then fills", async () => {
+  // Single-page injection: tear the singleton down, mount a fresh panel
+  // (its subscribe/read fail silently → graceful blank), then boot the
+  // model client and drive a setState — the documented late-arriver path.
+  resetModelClientForTests();
+  const late = /** @type {import("../src/components/agt-panel.js").AgtPanel} */ (
+    document.createElement("agt-panel")
+  );
+  document.body.append(late);
+  const lateShadow = need(late.shadowRoot, "late panel shadow root missing");
+  const lateFooter = need(
+    /** @type {HTMLElement | null} */ (lateShadow.querySelector(".agt-p-footer")),
+    "late panel footer element missing",
+  );
+  assert(
+    !(lateFooter.textContent ?? "").includes("Chat ·"),
+    `late footer must not render a model line before init, got ${JSON.stringify(lateFooter.textContent)}`,
+  );
+  await initModelClient();
+  // Any setState (the app does one after every /api/state fetch) retries the
+  // subscription and re-reads the frozen state: blank → filled.
+  late.setState(fixture);
+  const left = need(
+    /** @type {HTMLElement | null} */ (lateShadow.querySelector(".agt-p-footer-left")),
+    "late panel footer left missing",
+  );
+  assertEqual(
+    left.textContent,
+    "Chat · codestral-latest mistral · think off",
+    "late arriver filled from the model client state",
+  );
+  late.remove();
 });
 
 // ---------------------------------------------------------------- results

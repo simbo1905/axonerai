@@ -1,10 +1,11 @@
 // @ts-check
 import { footerSegments, formatFooter } from "../footer.mjs";
+import { getState, subscribe } from "../model-client.mjs";
 
 /**
  * Right-hand TUI-style side panel: session title, Context / MCP / LSP / Todo /
  * Models / Slash / Built-ins text trees with ▾/▸ triangles, and a status-bar
- * footer (`Chat · <model> <provider> · think off` on the left, context use
+ * footer (`Chat · <model> <service> · think off` on the left, context use
  * `<used>K (<percent>%)` on the right).
  * Monospace terminal styling lives entirely in this component's shadow DOM —
  * the chat keeps its existing fonts.
@@ -14,6 +15,13 @@ import { footerSegments, formatFooter } from "../footer.mjs";
  * `agt-toggle-tool` CustomEvent and (item48) MCP server toggles via
  * `agt-toggle-mcp` (agt-app does the POSTs and refetches state, which
  * reverts the optimistic row on failure).
+ *
+ * Model domain (item59): the panel SUBSCRIBES FIRST to the model client's
+ * `model_changed` stream, THEN reads getState() (late-arriver rule) — the
+ * footer (service+model+context window) and the FYI-only Models tree render
+ * from that frozen state and re-render when a `model_changed` event arrives
+ * (the current model is marked). The Models tree is never clickable and the
+ * footer renders blank until the model client's init has resolved.
  */
 
 /**
@@ -27,10 +35,10 @@ import { footerSegments, formatFooter } from "../footer.mjs";
 
 /**
  * `/api/state` snapshot (item27 pinned contract; item48 added the per-MCP
- * `enabled` toggle state).
+ * `enabled` toggle state; item57 renamed `provider` to `service`).
  *
  * @typedef {object} StateSnapshot
- * @property {string} provider
+ * @property {string} service
  * @property {string} model
  * @property {{ id: string, title: string }} session
  * @property {{ path: string | null, branch: string | null }} repo
@@ -39,6 +47,18 @@ import { footerSegments, formatFooter } from "../footer.mjs";
  * @property {McpServerState[]} mcp
  * @property {unknown[]} lsp
  * @property {unknown} todo
+ */
+
+/**
+ * The footer/Models-tree slice of the model domain (item59): current
+ * service+model plus the current model's context window from the roster
+ * entry. Null while the model client's init has not resolved (the footer
+ * renders blank, never an error).
+ *
+ * @typedef {object} ModelViewState
+ * @property {string | null} service
+ * @property {string | null} model
+ * @property {number | null} contextWindow
  */
 
 /**
@@ -162,6 +182,12 @@ export class AgtPanel extends HTMLElement {
   /** @type {HTMLButtonElement | null} */
   #collapseBtn = null;
   #collapsed = false;
+  /** @type {Readonly<StateSnapshot> | null} */
+  #snapshot = null;
+  /** @type {ModelViewState | null} */
+  #modelState = null;
+  /** @type {(() => void) | null} */
+  #unsubscribeModels = null;
 
   connectedCallback() {
     if (this.#rendered) return;
@@ -293,8 +319,145 @@ export class AgtPanel extends HTMLElement {
       this.#applyCollapsed();
     });
 
+    // Model domain (item59, late-arriver rule): subscribe FIRST, read the
+    // model client's frozen state SECOND — render value-or-blank, then live.
+    this.#subscribeModels();
+    this.#applyModelState(this.#readModelState());
+
     // Initial graceful state until the first /api/state snapshot arrives.
     this.setState(null);
+  }
+
+  /**
+   * Subscribe to the `model_changed` stream (D38: the ONLY channel by
+   * which this panel learns a swap). A panel mounted before the model
+   * client's init (late arriver) cannot subscribe yet — the attempt fails
+   * silently and is RETRIED on the next setState; until then the footer
+   * and Models tree render blank, never an error.
+   */
+  #subscribeModels() {
+    if (this.#unsubscribeModels) return;
+    try {
+      this.#unsubscribeModels = subscribe((event) => this.#onModelChanged(event));
+    } catch {
+      this.#unsubscribeModels = null;
+    }
+  }
+
+  /**
+   * Read the model domain's frozen state (subscribe-first-read-second): the
+   * current service+model plus the current model's context window resolved
+   * from the ROSTER (no fallback map — the roster is the only source, and a
+   * missing entry means "unknown window"). Returns null when the model
+   * client has not initialised yet or the server state has no selection —
+   * the caller renders blank, never an error.
+   *
+   * @returns {ModelViewState | null}
+   */
+  #readModelState() {
+    try {
+      const snap = getState();
+      if (!snap.service) return null;
+      let contextWindow = null;
+      if (snap.model) {
+        const entry = snap.roster[snap.service];
+        const row = entry?.models.find((m) => m.id === snap.model) ?? null;
+        contextWindow = row ? row.context_window : null;
+      }
+      return { service: snap.service, model: snap.model, contextWindow };
+    } catch {
+      // getState() before init(): the late-arriver blank, not an error.
+      return null;
+    }
+  }
+
+  /**
+   * Apply a model-state read: store it and re-render the footer and the
+   * FYI-only Models tree.
+   *
+   * @param {ModelViewState | null} state
+   */
+  #applyModelState(state) {
+    this.#modelState = state;
+    this.#renderModels();
+    if (this.#footerEl) this.#renderFooter();
+  }
+
+  /**
+   * `model_changed` arrived: the event IS the state change (D38) — apply
+   * its service+model directly (the context window is resolved from the
+   * roster, "unknown" when the client is not initialised) and re-render.
+   *
+   * @param {import("../model-client.mjs").ModelChangedEvent} event
+   */
+  #onModelChanged(event) {
+    let contextWindow = null;
+    try {
+      const entry = getState().roster[event.service];
+      const row = entry?.models.find((m) => m.id === event.model) ?? null;
+      contextWindow = row ? row.context_window : null;
+    } catch {
+      // not initialised yet — unknown window
+    }
+    this.#applyModelState({
+      service: event.service,
+      model: event.model,
+      contextWindow,
+    });
+  }
+
+  /**
+   * Render the Models tree — FYI-ONLY (glossary: reusable-picker): one dim
+   * header line per service, then its models `✓ id (K)` with the context
+   * window from the roster; the currently-selected service's model carries
+   * the ✓ mark. No click handlers, no toggles — /model is the only way to
+   * switch.
+   */
+  #renderModels() {
+    const section = this.#sections.get("Models");
+    if (!section) return;
+    if (!this.#modelState) {
+      this.#setLines(section, [{ text: "(unavailable)", cls: "agt-p-dim" }]);
+      return;
+    }
+    let roster = {};
+    try {
+      roster = getState().roster;
+    } catch {
+      roster = {};
+    }
+    const services = Object.values(roster);
+    if (services.length === 0) {
+      this.#setLines(section, [{ text: "(none)", cls: "agt-p-dim" }]);
+      return;
+    }
+    /** @type {Array<{ text: string, cls: string }>} */
+    const lines = [];
+    for (const entry of services) {
+      lines.push({ text: entry.service, cls: "agt-p-dim" });
+      for (const model of entry.models) {
+        const current =
+          entry.service === this.#modelState?.service &&
+          model.id === this.#modelState?.model;
+        const k = Math.round(model.context_window / 1000);
+        lines.push({
+          text: `${current ? "✓" : " "} ${model.id} (${Number.isFinite(k) ? k : "?"}K)`,
+          cls: "agt-p-line",
+        });
+      }
+    }
+    this.#setLines(section, lines);
+  }
+
+  /**
+   * Drop the model_changed subscription (the page owns one panel for its
+   * lifetime; the disconnect path exists for injection-style tests).
+   */
+  disconnectedCallback() {
+    if (this.#unsubscribeModels) {
+      this.#unsubscribeModels();
+      this.#unsubscribeModels = null;
+    }
   }
 
   /**
@@ -305,6 +468,13 @@ export class AgtPanel extends HTMLElement {
    */
   setState(snapshot) {
     if (!this.#rendered) return;
+    // Late-arriver retry: a panel mounted before the model client's init
+    // could not subscribe (#subscribeModels failed silently) — each setState
+    // retries the subscription and re-reads the frozen state, so the
+    // footer/Models tree fill as soon as init has resolved.
+    this.#subscribeModels();
+    this.#snapshot = snapshot ?? null;
+    this.#applyModelState(this.#readModelState());
     if (snapshot === null || snapshot === undefined) {
       this.#setUnavailable();
       return;
@@ -364,33 +534,46 @@ export class AgtPanel extends HTMLElement {
     this.#tools = Array.isArray(snapshot.tools) ? [...snapshot.tools] : [];
     this.#renderTools();
 
-    if (this.#footerEl) this.#renderFooter(snapshot);
+    // Footer tokens ride the snapshot; service/model/context-window ride
+    // the model domain (item59) — render footer + keep the Models tree fresh.
+    if (this.#footerEl) this.#renderFooter();
+    this.#renderModels();
   }
 
   /**
-   * Render the status-bar footer: left = `Chat · <model> <provider> · think
-   * off` (provider/think spans fainter than the model), right = context use
-   * `<used>K (<percent>%)` over the model's context window (percent omitted
-   * for models without a known window — see web/src/models.mjs).
-   *
-   * @param {Readonly<StateSnapshot>} snapshot
+   * Render the status-bar footer from the model domain's frozen state
+   * (item59): left = `Chat · <model> <service> · think off` (service/think
+   * spans fainter than the model), right = context use `<used>K
+   * (<percent>%)` over the model's context window resolved from the ROSTER
+   * (percent omitted for an unknown window). The context tokens come from
+   * the /api/state snapshot. Renders BLANK (never an error) while the
+   * model client's init has not resolved.
    */
-  #renderFooter(snapshot) {
+  #renderFooter() {
     const footer = this.#footerEl;
     if (!footer) return;
-    const segments = footerSegments(snapshot);
-    const { right } = formatFooter(snapshot, contextWindow);
+    if (!this.#modelState) {
+      footer.replaceChildren();
+      return;
+    }
+    const footerInput = {
+      model: this.#modelState.model,
+      service: this.#modelState.service,
+      context: this.#snapshot?.context ?? null,
+    };
+    const segments = footerSegments(footerInput);
+    const { right } = formatFooter(footerInput, this.#modelState.contextWindow);
     const left = document.createElement("span");
     left.className = "agt-p-footer-left";
     const head = document.createElement("span");
     head.textContent = `${segments.mode} · ${segments.model} `;
-    const provider = document.createElement("span");
-    provider.className = "agt-p-dim";
-    provider.textContent = segments.provider;
+    const service = document.createElement("span");
+    service.className = "agt-p-dim";
+    service.textContent = segments.service;
     const think = document.createElement("span");
     think.className = "agt-p-dim";
     think.textContent = ` · think ${segments.think}`;
-    left.append(head, provider, think);
+    left.append(head, service, think);
     const rightEl = document.createElement("span");
     rightEl.className = "agt-p-footer-right";
     rightEl.textContent = right;

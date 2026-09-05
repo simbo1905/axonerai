@@ -397,7 +397,9 @@ function isValidRecency(value) {
 
 /**
  * Persist one service's recency map to localStorage (the tx-like durable
- * write — ALWAYS before the model_changed broadcast).
+ * write — ALWAYS before the model_changed broadcast). Rank-0 entries (the
+ * "never used" merge default, see {@link ensureRecencyMap}) are NOT
+ * durable: only ranks ≥ 1 are written, so a stored map always re-validates.
  *
  * @param {Deps} d
  * @param {string} service
@@ -406,17 +408,26 @@ function isValidRecency(value) {
  */
 function persistRecency(d, service, map) {
   if (!d.localStorage) return;
+  /** @type {RecencyMap} */
+  const durable = {};
+  for (const key in map) {
+    if (map[key] >= 1) durable[key] = map[key];
+  }
   try {
-    d.localStorage.setItem(RECENCY_KEY_PREFIX + service, JSON.stringify(map));
+    d.localStorage.setItem(RECENCY_KEY_PREFIX + service, JSON.stringify(durable));
   } catch (error) {
     console.error("[model-client] recency persist failed", service, error);
   }
 }
 
 /**
- * Bootstrap-ensure one service's recency map: a valid stored map is kept
- * as-is; a missing or malformed one is rebuilt from the roster indexes
- * (model at index i gets rank i+1) and persisted immediately.
+ * Bootstrap-ensure one service's recency map (item58 follow-on MERGE):
+ * a valid stored map is KEPT — roster models absent from it are merged in
+ * at rank 0 (below every existing entry, "never used") in memory only; a
+ * missing or malformed one is rebuilt from the roster indexes (model at
+ * index i gets rank i+1) and persisted immediately. Rank 0 is never
+ * persisted ({@link persistRecency} filters it out), so stored maps keep
+ * validating on the next boot.
  *
  * @param {Deps} d
  * @param {Readonly<ServiceEntry>} entry
@@ -433,7 +444,14 @@ function ensureRecencyMap(d, entry) {
   if (stored !== null) {
     try {
       const parsed = JSON.parse(stored);
-      if (isValidRecency(parsed)) return /** @type {RecencyMap} */ (parsed);
+      if (isValidRecency(parsed)) {
+        /** @type {RecencyMap} */
+        const merged = { .../** @type {RecencyMap} */ (parsed) };
+        for (const model of entry.models) {
+          if (!(model.id in merged)) merged[model.id] = 0;
+        }
+        return merged;
+      }
       console.error("[model-client] malformed recency map (rebuilt)", entry.service, parsed);
     } catch {
       console.error("[model-client] malformed recency JSON (rebuilt)", entry.service);
@@ -592,8 +610,9 @@ function bumpRecency(d, service, model) {
  *    background; miss → GET /api/services in the foreground. The fetched
  *    roster replaces the cache either way.
  * 2. recency: per-service localStorage maps bootstrap-ensured against the
- *    roster (model at index i → rank i+1 unless a valid map already
- *    exists).
+ *    roster — a valid stored map is kept and roster models absent from it
+ *    are merged in at rank 0 (below every existing entry, in memory only);
+ *    a missing/malformed map is rebuilt (model at index i → rank i+1).
  * 3. selection: GET /api/state (the server is the owner); a missing or
  *    not-in-roster model default-selects the HIGHEST-rank model of the
  *    service, in memory only.

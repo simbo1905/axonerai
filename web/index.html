@@ -110,10 +110,17 @@
         line-height: 1.5;
       }
 
-      agt-composer { display: flex; gap: 8px; align-items: flex-end; position: relative; }
+      agt-composer { display: flex; flex-direction: column; gap: 6px; position: relative; }
+      .composer-row { display: flex; gap: 8px; align-items: flex-end; position: relative; }
+      .composer-error {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        color: #fca5a5;
+      }
+      .composer-error[hidden] { display: none; }
 
-      /* Slash-command menu overlaying/above the composer input. */
-      .slash-menu {
+      /* Reusable picker popup (agt-picker-menu) overlaying/above the composer input. */
+      .picker-menu {
         position: absolute;
         bottom: calc(100% + 6px);
         left: 0;
@@ -128,18 +135,28 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         font-size: 12px;
       }
-      .slash-menu[hidden] { display: none; }
-      .slash-option {
+      .picker-menu[hidden] { display: none; }
+      .picker-header {
+        padding: 5px 10px 3px;
+        color: #64748b;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-size: 10px;
+      }
+      .picker-gap { height: 6px; }
+      .picker-option {
         display: flex;
         gap: 10px;
         padding: 7px 10px;
         cursor: pointer;
         color: #e5e7eb;
       }
-      .slash-option.active { background: #1d4ed8; color: #ffffff; }
-      .slash-option-name { flex: none; min-width: 9ch; color: #6ee7b7; }
-      .slash-option.active .slash-option-name { color: #ffffff; }
-      .slash-option-desc {
+      .picker-option.active { background: #1d4ed8; color: #ffffff; }
+      .picker-current-mark { flex: none; width: 1.5ch; color: #fbbf24; }
+      .picker-option.active .picker-current-mark { color: #fde047; }
+      .picker-option-name { flex: none; min-width: 9ch; color: #6ee7b7; }
+      .picker-option.active .picker-option-name { color: #ffffff; }
+      .picker-option-meta {
         flex: 1;
         white-space: nowrap;
         overflow: hidden;

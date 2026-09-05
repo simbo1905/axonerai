@@ -61,10 +61,14 @@ declare global {
     __PANEL_STUB__?: {
       emit(frame: unknown): void;
       renames: string[];
+      prompts: string[];
       postCalls: Array<{ name: string; enabled: boolean }>;
       /** Recorded POST /api/mcp bodies (item48 MCP toggles). */
       mcpPosts: Array<{ server: string; enabled: boolean }>;
-      modelPosts: Array<{ model: string }>;
+      /** Recorded POST /api/model bodies (item59 model swaps). */
+      modelPosts: Array<{ service: string; model: string }>;
+      /** When true the next POST /api/model is answered 400 (item59). */
+      failNextModelPost?: boolean;
     };
     /** Headless pretty-printer smoke results (pretty.headless.mjs). */
     __PRETTY_TEST_RESULTS__?: {

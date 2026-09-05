@@ -269,8 +269,14 @@ test("recency: a valid stored map is kept as-is and a select bumps it to max+1 (
     window: /** @type {any} */ (makeWindow()),
     now: () => "2026-09-04T00:00:00.000Z",
   });
-  // stored map survives boot (NOT rebuilt from indexes)
-  assert.deepEqual(getState().recency.x, { m0: 2, m1: 5 });
+  // stored map survives boot (NOT rebuilt from indexes); roster models
+  // absent from it (m2) are merged in at rank 0 — below every existing
+  // entry, in memory only (item58 follow-on merge fix)
+  assert.deepEqual(getState().recency.x, { m0: 2, m1: 5, m2: 0 });
+  assert.deepEqual(JSON.parse(/** @type {string} */ (ls.peek(RECENCY_KEY_PREFIX + "x"))), {
+    m0: 2,
+    m1: 5,
+  });
   const result = await select("x", "m2");
   assert.ok(result.ok);
   assert.deepEqual(getState().recency.x, { m0: 2, m1: 5, m2: 6 });
@@ -278,6 +284,42 @@ test("recency: a valid stored map is kept as-is and a select bumps it to max+1 (
     m0: 2,
     m1: 5,
     m2: 6,
+  });
+});
+
+test("recency merge: a NEW roster model gets rank 0 below existing entries; storage stays valid", async () => {
+  // Stored map predates m2 (the roster later introduced it): m2 must merge
+  // at rank 0 (sorted below), the stored ranks must be preserved, and the
+  // durable map must keep validating (rank 0 never persisted).
+  const ls = makeStorage({ [RECENCY_KEY_PREFIX + "x"]: JSON.stringify({ m1: 4 }) });
+  const ss = makeStorage();
+  await init({
+    fetch: makeFetch(
+      {
+        "/api/services": { body: ROSTER },
+        "/api/state": { body: { service: "x", model: "m1" } },
+        "/api/model": { body: { service: "x", model: "m0" } },
+      },
+      calls,
+    ),
+    BroadcastChannel: FakeBroadcastChannel,
+    localStorage: /** @type {any} */ (ls),
+    sessionStorage: /** @type {any} */ (ss),
+    window: /** @type {any} */ (makeWindow()),
+    now: () => "2026-09-04T00:00:00.000Z",
+  });
+  assert.deepEqual(getState().recency.x, { m1: 4, m0: 0, m2: 0 });
+  // durable map still holds ONLY the valid stored ranks
+  assert.deepEqual(JSON.parse(/** @type {string} */ (ls.peek(RECENCY_KEY_PREFIX + "x"))), {
+    m1: 4,
+  });
+  // bumping a merged-in model promotes it to max+1 and persists only ≥1 ranks
+  const result = await select("x", "m0");
+  assert.ok(result.ok);
+  assert.deepEqual(getState().recency.x, { m1: 4, m0: 5, m2: 0 });
+  assert.deepEqual(JSON.parse(/** @type {string} */ (ls.peek(RECENCY_KEY_PREFIX + "x"))), {
+    m1: 4,
+    m0: 5,
   });
 });
 
@@ -613,15 +655,15 @@ test("boot with cache hit serves the stale roster immediately, then refreshes in
     ["old"],
   );
   // the background refresh lands: roster and cache refresh; the service's
-  // existing recency map is kept as-is (bootstrap-ensure only rebuilds a
-  // missing/malformed map — spec: "unless a map already exists")
+  // existing recency map is kept and the newly rostered "new" model is
+  // MERGED in at rank 0 (item58 follow-on: bootstrap-ensure merge, not skip)
   releaseServices({ ok: true, status: 200, json: async () => fresh });
   await whenIdle();
   assert.deepEqual(
     getState().roster.x.models.map((m) => m.id),
     ["old", "new"],
   );
-  assert.deepEqual(getState().recency.x, { old: 1 });
+  assert.deepEqual(getState().recency.x, { old: 1, new: 0 });
   const cached = JSON.parse(/** @type {string} */ (ss.peek(ROSTER_CACHE_KEY)));
   assert.equal(cached[0].models.length, 2);
 });

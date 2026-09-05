@@ -8,9 +8,9 @@ import {
   formatFooter,
 } from "./footer.mjs";
 
-/** Minimal /api/state-shaped snapshot for the footer tests. */
+/** Minimal footer-shaped slice: service+model (model client) + context. */
 const snapshot = {
-  provider: "mistral",
+  service: "mistral",
   model: "zai-glm-5-2",
   context: { tokens: 12345 },
 };
@@ -20,7 +20,7 @@ test("mode/think slots are hardcoded Chat/off for now", () => {
   assert.equal(FOOTER_THINK, "off");
 });
 
-test("left is `Chat · <model> <provider> · think off`", () => {
+test("left is `Chat · <model> <service> · think off` (no provider word)", () => {
   const { left } = formatFooter(snapshot, 131072);
   assert.equal(left, "Chat · zai-glm-5-2 mistral · think off");
 });
@@ -58,15 +58,15 @@ test("unknown model (null context window) omits the percent", () => {
 
 test("non-numeric tokens render an empty right slot", () => {
   assert.equal(
-    formatFooter({ provider: "mistral", model: "m", context: { tokens: "x" } }, 131072)
+    formatFooter({ service: "mistral", model: "m", context: { tokens: "x" } }, 131072)
       .right,
     "",
   );
-  assert.equal(formatFooter({ provider: "mistral", model: "m" }, null).right, "");
+  assert.equal(formatFooter({ service: "mistral", model: "m" }, null).right, "");
 });
 
-test("missing model/provider fall back to (unknown)", () => {
+test("missing model/service fall back to (unknown)", () => {
   assert.equal(footerSegments({}).model, "(unknown)");
-  assert.equal(footerSegments({}).provider, "(unknown)");
+  assert.equal(footerSegments({}).service, "(unknown)");
   assert.equal(footerSegments(null).model, "(unknown)");
 });

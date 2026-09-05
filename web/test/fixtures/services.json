@@ -1,0 +1,21 @@
+[
+  {
+    "service": "mistral",
+    "enabled": true,
+    "connected": true,
+    "models": [
+      { "id": "zai-glm-5-2", "display": "GLM 5.2", "context_window": 32768 },
+      { "id": "mistral-large-latest", "display": "Mistral Large", "context_window": 131072 },
+      { "id": "codestral-latest", "display": "Codestral", "context_window": 262144 }
+    ]
+  },
+  {
+    "service": "groq",
+    "enabled": true,
+    "connected": true,
+    "models": [
+      { "id": "llama-3.3-70b", "display": "Llama 3.3 70B", "context_window": 131072 },
+      { "id": "gpt-oss-120b", "display": "GPT-OSS 120B", "context_window": 131072 }
+    ]
+  }
+]

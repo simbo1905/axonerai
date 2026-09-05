@@ -198,10 +198,13 @@ The web demo requires:
 
 The right-hand TUI-style side panel renders status trees (Context, MCP, LSP,
 Todo, Models, Slash, Built-ins) plus a per-session tool toggle list. Its
-status-bar footer shows `Chat · <model> <provider> · think off` plus the
+status-bar footer shows `Chat · <model> <service> · think off` plus the
 context use `<used>K (<percent>%)` over the model's context window. Commands
 are typed in the composer:
 
+- `/model` — open the service/model picker (one section per service, recently
+  used models first, the running model marked; a selection swaps the model
+  via the model client).
 - `/built-ins` — open the Built-ins tree and toggle tools per session.
 - `/verbose` — toggle verbose output rendering (tool-call trace lines).
 - `/rename <title>` — rename the session.
@@ -212,7 +215,7 @@ A `/` typed as the FIRST character is a command; a slash anywhere else is
 ordinary chat. Slash commands run entirely in the browser: the prompt is never
 sent to the model. Command results go to the devtools console bus
 (`console.log`-style lines); the panel Slash tree keeps only the invocation
-echo (e.g. `/models`).
+echo (e.g. `/model`).
 
 Panel notes: **Context** shows real provider-message tokens — a bytes/4
 estimate over the per-session agent-state messages (system prompt included
@@ -235,11 +238,14 @@ subscribes to that spooled stream and replays the backlog on open.
 
 Control-plane state is REST; the chat data plane is the WebSocket:
 
-- `GET /api/state` — provider/model/session/repo/context/tools/MCP snapshot.
+- `GET /api/state` — service/model/session/repo/context/tools/MCP snapshot.
+- `GET /api/services` — the services roster: one entry per service (enabled,
+  connected) with its models (id, display, context window).
 - `POST /api/tools` — `{"name": "<tool>", "enabled": bool}` toggle.
-- `POST /api/model` — `{"model": "<id>"}` swap the model used for subsequent
-  agent runs (validated against the config roster; responds with the updated
-  state snapshot).
+- `POST /api/model` — `{"service": "<name>", "model": "<id>"}` swap the model
+  used for subsequent agent runs (validated against the config roster;
+  `{"model": "<id>"}` alone is still accepted for back-compatibility and swaps
+  within the current service).
 - `GET /api/sessions` — index of all rollouts, newest first.
 - `GET /api/session/{uuid}?after=<ms>` — chunked line-format catch-up stream.
 - `GET /openapi.yaml` — OpenAPI 3.1 document for the REST API.

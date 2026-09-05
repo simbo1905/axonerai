@@ -89,15 +89,26 @@ test("every registered command parses without error (rename needs args)", () => 
   }
 });
 
-test("/model is retired: unknown command", () => {
-  assert.equal(
-    COMMANDS.find((command) => command.name === "model"),
-    undefined,
-    "the retired /model command must not linger in the registry",
-  );
+test("/model is registered: /models stays absent (item59)", () => {
+  const model = COMMANDS.find((command) => command.name === "model");
+  if (!model) throw new Error("the /model command is missing from the registry");
+  assert.equal(model.description, "switch the running model (service + model picker)");
+  assert.equal(model.argsRequired, undefined, "model takes no args");
   assert.deepEqual(parseInput("/model"), {
     kind: "command",
     name: "model",
+    args: "",
+  });
+  // The plural form must NOT come back: /models was retired by the
+  // services pivot and must not linger (item59).
+  assert.equal(
+    COMMANDS.find((command) => command.name === "models"),
+    undefined,
+    "the retired /models command must not come back",
+  );
+  assert.deepEqual(parseInput("/models"), {
+    kind: "command",
+    name: "models",
     args: "",
     error: "unknown",
   });
@@ -107,6 +118,7 @@ test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("").map((c) => c.name),
     [
+      "model",
       "built-ins",
       "mcp",
       "skills",
@@ -119,6 +131,7 @@ test("prefix filtering matches command names", () => {
   assert.deepEqual(
     filterCommands("/").map((c) => c.name),
     [
+      "model",
       "built-ins",
       "mcp",
       "skills",
@@ -168,10 +181,11 @@ test("commands are lowercase; input case is not normalized for parsing", () => {
   }
 });
 
-test("registry has exactly the v1+console+skills+mcp commands with descriptions", () => {
+test("registry has exactly the v1+model+console+skills+mcp commands with descriptions", () => {
   assert.deepEqual(
     COMMANDS.map((c) => c.name),
     [
+      "model",
       "built-ins",
       "mcp",
       "skills",

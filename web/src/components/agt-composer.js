@@ -1,16 +1,32 @@
 // @ts-check
 import { filterCommands, parseInput } from "../commands.mjs";
+import "./agt-picker-menu.js";
+
+/** @typedef {import("./agt-picker-menu.js").PickerSection} PickerSection */
+/** @typedef {import("./agt-picker-menu.js").PickerItem} PickerItem */
 
 /**
- * Composer with the slash-command menu.
+ * Composer: chat input + slash-command menu + reusable picker popup.
  *
- * Typing `/` as the FIRST character opens the command list above the input:
- * ↑/↓ move the highlight (wrapping), Enter completes+runs the highlighted
- * command, Tab completes the name, Esc closes, click selects, typing filters
- * by prefix. ARIA listbox/option with aria-activedescendant; focus stays in
- * the textarea the whole time. Running a command dispatches `agt-command`
- * {detail:{name, args, rawText}} upward — commands are control plane and
- * never go to the model. Non-slash input keeps the exact chat-send behaviour.
+ * Slash mode: typing `/` as the FIRST character opens the command list
+ * above the input — ↑/↓ move the highlight (wrapping), Enter
+ * completes+runs the highlighted command, Tab completes the name, Esc
+ * closes, click selects, typing filters by prefix. Running a command
+ * dispatches `agt-command` {detail:{name, args, rawText}} upward —
+ * commands are control plane and never go to the model. Non-slash input
+ * keeps the exact chat-send behaviour.
+ *
+ * Picker mode (item59): {@link AgtComposer#openPicker} opens the SAME
+ * shared `agt-picker-menu` component (glossary: reusable-picker) fed by
+ * caller-provided sections (e.g. the /model service/model sections). While
+ * open: ↑/↓/Enter/Escape route into the picker, typing filters its rows
+ * (`filter-as-you-type`), and a selection is re-dispatched upward as
+ * `agt-picker-select` {detail:{kind, id, section}} — the composer itself
+ * never owns model state and never calls the backend (architecture moves
+ * #3/#4).
+ *
+ * The error line (`showError`) is where failed control-plane actions
+ * (e.g. a 400 from the model swap) surface next to the input.
  */
 export class AgtComposer extends HTMLElement {
   #disabled = false;
@@ -18,9 +34,13 @@ export class AgtComposer extends HTMLElement {
   /** @type {HTMLTextAreaElement | null} */
   #textarea = null;
   /** @type {HTMLDivElement | null} */
-  #menu = null;
-  #menuOpen = false;
-  #highlight = 0;
+  #row = null;
+  /** @type {import("./agt-picker-menu.js").AgtPickerMenu | null} */
+  #picker = null;
+  /** @type {HTMLDivElement | null} */
+  #error = null;
+  /** @type {"slash" | "models" | null} null = the popup is closed. */
+  #pickerKind = null;
   /** @type {ReturnType<typeof filterCommands>} */
   #matches = [];
 
@@ -38,24 +58,34 @@ export class AgtComposer extends HTMLElement {
     if (this.#rendered) return;
     this.#rendered = true;
 
-    const menu = document.createElement("div");
-    menu.className = "slash-menu";
-    menu.id = "agt-slash-menu";
-    menu.setAttribute("role", "listbox");
-    menu.setAttribute("aria-label", "Slash commands");
-    menu.hidden = true;
-    // Keep focus in the textarea when a menu option is pressed, so the click
-    // lands before any blur-driven close.
-    menu.addEventListener("mousedown", (e) => e.preventDefault());
-    menu.addEventListener("click", (e) => {
-      const target = /** @type {HTMLElement} */ (e.target);
-      const option = /** @type {HTMLElement | null} */ (
-        target instanceof Element ? target.closest(".slash-option") : null
-      );
-      if (option instanceof HTMLElement && option.dataset.name) {
-        this.#runCommand(option.dataset.name);
+    const picker = /** @type {import("./agt-picker-menu.js").AgtPickerMenu} */ (
+      document.createElement("agt-picker-menu")
+    );
+    picker.menuId = "agt-slash-menu";
+    picker.listLabel = "Slash commands";
+    // The composer owns what a selection MEANS; the picker is render-only.
+    picker.addEventListener("agt-picker-select", (e) => {
+      const detail = /** @type {CustomEvent} */ (e).detail;
+      if (!detail || typeof detail.id !== "string") return;
+      if (this.#pickerKind === "slash") {
+        this.#runCommand(detail.id);
+        return;
       }
+      // models (or any future feed): hand the typed selection upward —
+      // agt-app decides what it means and owns the backend call.
+      const kind = this.#pickerKind;
+      this.#closePicker();
+      this.dispatchEvent(
+        new CustomEvent("agt-picker-select", {
+          detail: { kind, ...detail },
+          bubbles: true,
+          composed: true,
+        }),
+      );
     });
+
+    const row = document.createElement("div");
+    row.className = "composer-row";
 
     const textarea = document.createElement("textarea");
     textarea.className = "composer-input";
@@ -71,18 +101,79 @@ export class AgtComposer extends HTMLElement {
     button.type = "button";
     button.textContent = "Send";
 
+    const error = document.createElement("div");
+    error.className = "composer-error";
+    error.hidden = true;
+    error.setAttribute("role", "status");
+    error.setAttribute("aria-live", "polite");
+
+    row.append(textarea, button);
+    this.replaceChildren(picker, row, error);
+    this.#picker = picker;
+    this.#row = row;
+    this.#error = error;
+    this.#textarea = textarea;
+
     button.addEventListener("click", () => this.#send());
-    textarea.addEventListener("input", () => this.#updateMenu());
+    textarea.addEventListener("input", () => this.#onInput());
     textarea.addEventListener("keydown", (e) => this.#onKeydown(e));
     textarea.addEventListener("blur", () => {
       // Small delay so a click on a menu option registers first.
-      setTimeout(() => this.#closeMenu(), 120);
+      setTimeout(() => this.#closePicker(), 120);
     });
-
-    this.replaceChildren(menu, textarea, button);
-    this.#textarea = textarea;
-    this.#menu = menu;
     this.#applyDisabled();
+  }
+
+  /**
+   * Open the shared picker popup with caller-provided sections (render
+   * only — the caller owns the data, e.g. the /model runner feeds
+   * model-client getState()). `kind` tags the selection event so agt-app
+   * can route it.
+   *
+   * @param {readonly import("./agt-picker-menu.js").PickerSection[]} sections
+   * @param {"models"} kind
+   */
+  openPicker(sections, kind = "models") {
+    const picker = this.#picker;
+    const textarea = this.#textarea;
+    if (!picker || !textarea) return;
+    this.#pickerKind = kind;
+    picker.sections = sections;
+    picker.open();
+    textarea.setAttribute("aria-expanded", "true");
+  }
+
+  /** Close the popup (any mode). */
+  #closePicker() {
+    const picker = this.#picker;
+    const textarea = this.#textarea;
+    this.#pickerKind = null;
+    if (picker) picker.close();
+    if (textarea) {
+      textarea.setAttribute("aria-expanded", "false");
+      textarea.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  /**
+   * Surface a control-plane failure (e.g. a 400 from the model swap) in
+   * the composer error line. Cleared by the next input or send.
+   *
+   * @param {string} message
+   */
+  showError(message) {
+    const error = this.#error;
+    if (!error) return;
+    error.textContent = message;
+    error.hidden = false;
+  }
+
+  #clearError() {
+    const error = this.#error;
+    if (error) {
+      error.textContent = "";
+      error.hidden = true;
+    }
   }
 
   #send() {
@@ -98,48 +189,74 @@ export class AgtComposer extends HTMLElement {
       return;
     }
     textarea.value = "";
+    this.#clearError();
     this.dispatchEvent(
       new CustomEvent("agt-send", { detail: { text }, bubbles: true, composed: true }),
     );
   }
 
+  #onInput() {
+    const textarea = this.#textarea;
+    const picker = this.#picker;
+    this.#clearError();
+    if (!textarea || !picker) return;
+    if (this.#pickerKind === "models") {
+      // Filter-as-you-type over the picker's rows.
+      picker.filter(textarea.value);
+      const active = picker.activeId;
+      if (active) textarea.setAttribute("aria-activedescendant", active);
+      else textarea.removeAttribute("aria-activedescendant");
+      return;
+    }
+    this.#updateSlashMenu();
+  }
+
   #onKeydown(/** @type {KeyboardEvent} */ e) {
     const textarea = this.#textarea;
-    if (!textarea) return;
+    const picker = this.#picker;
+    if (!textarea || !picker) return;
 
-    if (this.#menuOpen) {
+    if (this.#pickerKind === "models") {
+      if (picker.handleKey(e)) {
+        e.preventDefault();
+        const active = picker.activeId;
+        if (active) textarea.setAttribute("aria-activedescendant", active);
+        else textarea.removeAttribute("aria-activedescendant");
+        if (!picker.isOpen) this.#pickerKind = null;
+      }
+      return;
+    }
+
+    if (this.#pickerKind === "slash") {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
-        const count = this.#matches.length;
-        if (count === 0) return;
-        this.#highlight =
-          e.key === "ArrowDown"
-            ? (this.#highlight + 1) % count
-            : (this.#highlight - 1 + count) % count;
-        this.#renderMenu();
+        picker.moveHighlight(e.key === "ArrowDown" ? 1 : -1);
+        const active = picker.activeId;
+        if (active) textarea.setAttribute("aria-activedescendant", active);
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        this.#closeMenu();
+        this.#closePicker();
         return;
       }
       if (e.key === "Tab") {
         e.preventDefault();
-        const match = this.#matches[this.#highlight];
+        const match = this.#matches[picker.activeIndex];
         if (match) {
           textarea.value = `/${match.name} `;
           textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-          this.#updateMenu();
+          this.#updateSlashMenu();
         }
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        const match = this.#matches[this.#highlight];
+        const match = this.#matches[picker.activeIndex];
         if (match) {
-          this.#runCommand(match.name);
+          picker.confirm();
         } else {
+          this.#closePicker();
           this.#runParsed(textarea.value);
         }
         return;
@@ -155,68 +272,41 @@ export class AgtComposer extends HTMLElement {
     }
   }
 
-  #updateMenu() {
+  /**
+   * Slash mode: prefix-filter the command registry and render the
+   * "Commands" section through the shared picker (same UX as before, now
+   * the reusable component).
+   */
+  #updateSlashMenu() {
     const textarea = this.#textarea;
-    const menu = this.#menu;
-    if (!textarea || !menu) return;
+    const picker = this.#picker;
+    if (!textarea || !picker) return;
     const value = textarea.value;
     if (!value.startsWith("/") || this.#disabled) {
-      this.#closeMenu();
+      this.#closePicker();
       return;
     }
     this.#matches = filterCommands(value);
     if (this.#matches.length === 0) {
-      this.#closeMenu();
+      this.#closePicker();
       return;
     }
-    if (this.#highlight >= this.#matches.length) this.#highlight = 0;
-    this.#menuOpen = true;
-    menu.hidden = false;
+    this.#pickerKind = "slash";
+    picker.sections = [
+      {
+        name: "Commands",
+        items: this.#matches.map((command) => ({
+          id: command.name,
+          label: `/${command.name}`,
+          meta: command.description,
+        })),
+      },
+    ];
+    picker.open();
     textarea.setAttribute("aria-expanded", "true");
-    this.#renderMenu();
-  }
-
-  #renderMenu() {
-    const menu = this.#menu;
-    const textarea = this.#textarea;
-    if (!menu || !textarea) return;
-    menu.replaceChildren(
-      ...this.#matches.map((command, i) => {
-        const option = document.createElement("div");
-        option.className =
-          i === this.#highlight ? "slash-option active" : "slash-option";
-        option.id = `agt-slash-opt-${i}`;
-        option.dataset.name = command.name;
-        option.setAttribute("role", "option");
-        option.setAttribute("aria-selected", i === this.#highlight ? "true" : "false");
-
-        const name = document.createElement("span");
-        name.className = "slash-option-name";
-        name.textContent = `/${command.name}`;
-        const desc = document.createElement("span");
-        desc.className = "slash-option-desc";
-        desc.textContent = command.description;
-        option.append(name, desc);
-        return option;
-      }),
-    );
-    const active = this.#matches[this.#highlight];
-    if (active) {
-      textarea.setAttribute("aria-activedescendant", `agt-slash-opt-${this.#highlight}`);
-    } else {
-      textarea.removeAttribute("aria-activedescendant");
-    }
-  }
-
-  #closeMenu() {
-    const menu = this.#menu;
-    const textarea = this.#textarea;
-    this.#menuOpen = false;
-    if (menu) menu.hidden = true;
-    if (textarea) {
-      textarea.setAttribute("aria-expanded", "false");
-      textarea.removeAttribute("aria-activedescendant");
-    }
+    const active = picker.activeId;
+    if (active) textarea.setAttribute("aria-activedescendant", active);
+    else textarea.removeAttribute("aria-activedescendant");
   }
 
   /**
@@ -234,12 +324,12 @@ export class AgtComposer extends HTMLElement {
       parsed.kind === "command" && parsed.name === name && !parsed.error
         ? parsed.args
         : "";
-    // A menu selection RESOLVES a typo'd prefix ("/m" → "/models"): dispatch
+    // A menu selection RESOLVES a typo'd prefix ("/m" → "/model"): dispatch
     // the canonical command text so the runner re-parses the command that was
     // actually selected, never the raw prefix that failed to parse.
     const resolved = args ? `/${name} ${args}` : `/${name}`;
     textarea.value = "";
-    this.#closeMenu();
+    this.#closePicker();
     this.dispatchEvent(
       new CustomEvent("agt-command", {
         detail: { name, args, rawText: resolved },
@@ -265,7 +355,7 @@ export class AgtComposer extends HTMLElement {
       return;
     }
     textarea.value = "";
-    this.#closeMenu();
+    this.#closePicker();
     this.dispatchEvent(
       new CustomEvent("agt-command", {
         detail: { name: parsed.name, args: parsed.args, rawText },
@@ -282,7 +372,7 @@ export class AgtComposer extends HTMLElement {
     );
     if (textarea) {
       textarea.disabled = this.#disabled;
-      if (this.#disabled) this.#closeMenu();
+      if (this.#disabled) this.#closePicker();
     }
     if (button) button.disabled = this.#disabled;
   }

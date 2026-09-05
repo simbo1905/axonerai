@@ -1,17 +1,42 @@
 {
-  "provider": "mistral",
   "model": "zai-glm-5-2",
-  "session": { "id": "11111111-2222-3333-4444-555555555555", "title": "axonerai" },
-  "repo": { "path": "/Users/Shared/axonerai", "branch": "simbo1905" },
-  "context": { "tokens": 12345, "context_window": 32768 },
+  "session": {
+    "id": "11111111-2222-3333-4444-555555555555",
+    "title": "axonerai"
+  },
+  "repo": {
+    "path": "/Users/Shared/axonerai",
+    "branch": "simbo1905"
+  },
+  "context": {
+    "tokens": 12345,
+    "context_window": 32768
+  },
   "tools": [
-    { "name": "WebSearch", "enabled": true, "source": "builtin" },
-    { "name": "tavily_search", "enabled": true, "source": "mcp" }
+    {
+      "name": "WebSearch",
+      "enabled": true,
+      "source": "builtin"
+    },
+    {
+      "name": "tavily_search",
+      "enabled": true,
+      "source": "mcp"
+    }
   ],
   "mcp": [
-    { "name": "tavily", "status": "connected", "enabled": true },
-    { "name": "context7", "status": "connected", "enabled": true }
+    {
+      "name": "tavily",
+      "status": "connected",
+      "enabled": true
+    },
+    {
+      "name": "context7",
+      "status": "connected",
+      "enabled": true
+    }
   ],
   "lsp": [],
-  "todo": null
+  "todo": null,
+  "service": "mistral"
 }

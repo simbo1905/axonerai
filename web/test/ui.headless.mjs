@@ -174,18 +174,29 @@ window.AgtClient = {
 
 // ------------------------------------------------------------- load the UI
 
-// Tiny extension: stub /api/state (fixture JSON) and /api/tools BEFORE the
-// app is imported so agt-app's control-plane fetches stay console-clean.
-// Assertions below are unmodified.
+// Tiny extension: stub /api/state (fixture JSON), /api/services (item59
+// model roster) and /api/tools BEFORE the app is imported so agt-app's
+// control-plane fetches (and the pre-mount model-client init) stay
+// console-clean. Assertions below are unmodified.
 const realFetch = window.fetch.bind(window);
 /** @type {any} */
 const stateFixture = await (
   await realFetch("/test/fixtures/state.json")
 ).json();
+/** @type {any} */
+const servicesFixture = await (
+  await realFetch("/test/fixtures/services.json")
+).json();
 window.fetch = /** @type {typeof window.fetch} */ (async (input, init) => {
   const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
   if (url === "/api/state") {
     return new Response(JSON.stringify(stateFixture), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  if (url === "/api/services") {
+    return new Response(JSON.stringify(servicesFixture), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
@@ -218,10 +229,15 @@ window.fetch = /** @type {typeof window.fetch} */ (async (input, init) => {
 await import("/src/components/agt-app.js");
 
 const app = need(document.querySelector("agt-app"), "agt-app element missing");
-// Non-null once the stub client's connect() has registered it.
-const stub = /** @type {NonNullable<Window["__UI_STUB__"]>} */ (
-  window.__UI_STUB__
-);
+// item59: the boot now awaits the model client's pre-mount init BEFORE the
+// stub client connects, so the stub is resolved lazily (never captured
+// stale-undefined at import time).
+/** @returns {NonNullable<Window["__UI_STUB__"]>} */
+function stub() {
+  return /** @type {NonNullable<Window["__UI_STUB__"]>} */ (
+    need(window.__UI_STUB__, "stub client missing")
+  );
+}
 
 /** @returns {any} */
 function composerEl() {
@@ -264,7 +280,7 @@ await test("prompt renders as You bubble and composer is disabled while in fligh
     composer.querySelector("button")
   );
 
-  stub.setNextReply({
+  stub().setNextReply({
     kind: "assistant",
     text: "Hello from the stub agent",
     delay: 150,
@@ -345,7 +361,7 @@ await test("error reply renders as error bubble and composer re-enables", async 
     composer.querySelector("textarea")
   );
 
-  stub.setNextReply({
+  stub().setNextReply({
     kind: "error",
     message: "No provider configured",
     delay: 80,
@@ -446,7 +462,7 @@ await test("Enter sends the prompt and clears the box; Shift+Enter does not send
   textarea.value = "";
 });
 
-await test("footer status bar renders Chat · model provider · think off and K (p%)", async () => {
+await test("footer status bar renders Chat · model service · think off and K (p%) from the model domain", async () => {
   const panel = need(
     /** @type {HTMLElement | null} */ (document.querySelector("agt-panel")),
     "panel missing",
@@ -458,6 +474,8 @@ await test("footer status bar renders Chat · model provider · think off and K 
   }, "footer left rendered");
   const left = shadow.querySelector(".agt-p-footer-left");
   const right = shadow.querySelector(".agt-p-footer-right");
+  // item59: service+model ride the model client state (never "provider");
+  // the context window is resolved from the roster entry (32768).
   assertEqual(
     left?.textContent,
     "Chat · zai-glm-5-2 mistral · think off",
@@ -485,7 +503,7 @@ await test("status pill renders Connecting and Error states; onError re-enables 
   fresh.remove();
 
   const pill = () => document.querySelector("agt-status .pill");
-  stub.handlers.onError(new Event("error"));
+  stub().handlers.onError(new Event("error"));
   const errorPill = /** @type {HTMLElement} */ (
     await waitFor(() => {
       const el = pill();
@@ -496,7 +514,7 @@ await test("status pill renders Connecting and Error states; onError re-enables 
 
   // Recovery: onOpen flips back to connected (the app has no dedicated
   // "reconnecting" state — states are connecting/connected/disconnected/error).
-  stub.handlers.onOpen();
+  stub().handlers.onOpen();
   await waitFor(
     () => pill()?.classList.contains("pill-connected") === true,
     "connected pill restored",
@@ -508,7 +526,7 @@ await test("status pill renders Connecting and Error states; onError re-enables 
 });
 
 await test("tool_call lines: hidden by default, /verbose reveals them, expand pretty-prints, /verbose hides again", async () => {
-  stub.emit({
+  stub().emit({
     _type: "tool_call",
     id: null,
     session_id: "test",
@@ -608,7 +626,7 @@ await test("tool_call lines: hidden by default, /verbose reveals them, expand pr
 
 await test("disconnect disables the composer; reconnect re-enables it", async () => {
   const composer = composerEl();
-  stub.handlers.onClose();
+  stub().handlers.onClose();
   assert(
     composer.querySelector("textarea").disabled === true,
     "composer should be disabled when disconnected",
@@ -621,7 +639,7 @@ await test("disconnect disables the composer; reconnect re-enables it", async ()
     "disconnected pill not rendered",
   );
 
-  stub.handlers.onOpen();
+  stub().handlers.onOpen();
   await waitFor(
     () => !composer.querySelector("textarea").disabled,
     "composer re-enabled after reconnect",

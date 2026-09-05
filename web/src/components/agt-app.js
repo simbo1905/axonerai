@@ -23,6 +23,11 @@ import "./agt-status.js";
 import "./agt-chat-log.js";
 import "./agt-composer.js";
 import "./agt-panel.js";
+import {
+  getState as getModelState,
+  init as initModelClient,
+  select as selectModel,
+} from "../model-client.mjs";
 
 /**
  * @typedef {import("/src/wire.mjs").WireEvent} WireEvent
@@ -110,21 +115,39 @@ export class AgtApp extends HTMLElement {
   connectedCallback() {
     if (!this.#wired) {
       this.#wired = true;
+      // Mounting is async: the model domain client initialises BEFORE any
+      // web component mounts (docs/FRONTEND-ARCHITECTURE.md §(b), mermaid b)
+      // so components mount into an already-consistent, frozen world.
+      this.#mount();
+    } else {
+      this.#render();
+    }
+  }
 
-      // Swap the generated `.mjs` wire validators for the Rust/WASM ones
-      // (same schema contract, so the swap is invisible to callers). Until
-      // (and unless) the WASM glue loads, the `.mjs` fallback stays in
-      // place and `parseWireEvent` behaviour is unchanged.
-      initWasmValidators().catch((error) => {
-        console.error("[wire] WASM validators failed to load; using mjs validators", error);
-      });
+  /**
+   * Mount: console tee bus, PRE-MOUNT model client init, then the DOM (the
+   * component tree mounts into the frozen model state), then the wire.
+   */
+  async #mount() {
+    // Swap the generated `.mjs` wire validators for the Rust/WASM ones
+    // (same schema contract, so the swap is invisible to callers). Until
+    // (and unless) the WASM glue loads, the `.mjs` fallback stays in
+    // place and `parseWireEvent` behaviour is unchanged.
+    initWasmValidators().catch((error) => {
+      console.error("[wire] WASM validators failed to load; using mjs validators", error);
+    });
 
-      // Console tee bus (item32): capture this chat screen's console from
-      // boot so log/info/warn/error also flow to the agt-console
-      // BroadcastChannel → spool worker → IndexedDB backlog.
-      installConsoleBus();
+    // Console tee bus (item32): capture this chat screen's console from
+    // boot so log/info/warn/error also flow to the agt-console
+    // BroadcastChannel → spool worker → IndexedDB backlog.
+    installConsoleBus();
 
-      const main = document.createElement("div");
+    // D39: the model domain client runs BEFORE any web component mounts.
+    // Never throws — a failure resolves with a sparse snapshot and the
+    // consumers render value-or-blank.
+    await initModelClient();
+
+    const main = document.createElement("div");
       main.className = "agt-main";
 
       const status = document.createElement("agt-status");
@@ -140,6 +163,17 @@ export class AgtApp extends HTMLElement {
         const detail = /** @type {CustomEvent} */ (e).detail;
         if (detail && typeof detail.rawText === "string") {
           this.#runCommand(/** @type {{ rawText: string }} */ (detail));
+        }
+      });
+      composer.addEventListener("agt-picker-select", (e) => {
+        const detail = /** @type {CustomEvent} */ (e).detail;
+        if (
+          detail &&
+          detail.kind === "models" &&
+          typeof detail.id === "string" &&
+          typeof detail.section === "string"
+        ) {
+          this.#selectModel(detail.section, detail.id);
         }
       });
       main.replaceChildren(status, log, composer);
@@ -181,7 +215,6 @@ export class AgtApp extends HTMLElement {
       window.addEventListener("agt-verbose-changed", () => this.#render());
 
       this.#boot();
-    }
     this.#render();
   }
 
@@ -431,6 +464,57 @@ export class AgtApp extends HTMLElement {
   }
 
   /**
+   * Build the /model picker sections from the model client's frozen state
+   * (render-only data preparation): sections = services in /api/services
+   * order; each service's models sorted by recency rank (HIGHEST first,
+   * ties keep roster order); the currently-selected service's model is
+   * marked; each row's meta carries the roster's context window.
+   *
+   * @returns {import("./agt-composer.js").PickerSection[]}
+   */
+  #modelPickerSections() {
+    const snap = getModelState();
+    /** @type {import("./agt-composer.js").PickerSection[]} */
+    const sections = [];
+    for (const entry of Object.values(snap.roster)) {
+      const ranks = snap.recency[entry.service] ?? {};
+      const items = entry.models
+        .map((model, index) => ({
+          model,
+          index,
+          rank: ranks[model.id] ?? 0,
+        }))
+        .sort((a, b) => b.rank - a.rank || a.index - b.index)
+        .map(({ model }) => ({
+          id: model.id,
+          label: model.display,
+          meta: `${Math.round(model.context_window / 1000)}K context`,
+          current: entry.service === snap.service && model.id === snap.model,
+        }));
+      sections.push({ name: entry.service, items });
+    }
+    return sections;
+  }
+
+  /**
+   * Swap the running service+model: the model client OWNS POST /api/model
+   * (D39 — the UI never talks to the backend for this); on failure the
+   * error surfaces in the composer error line. On success the
+   * `model_changed` broadcast re-renders the footer/Models tree.
+   *
+   * @param {string} service
+   * @param {string} model
+   */
+  async #selectModel(service, model) {
+    const result = await selectModel(service, model);
+    if (result.ok) return;
+    const composer = /** @type {import("./agt-composer.js").AgtComposer} */ (
+      this.querySelector("agt-composer")
+    );
+    composer?.showError(result.error ?? "model swap failed");
+  }
+
+  /**
    * Handle a validated, deep-frozen wire event delivered by the client.
    * Invalid frames are already dropped (and logged) by wire.mjs; this null
    * guard is purely defensive.
@@ -511,6 +595,24 @@ export class AgtApp extends HTMLElement {
     }
 
     switch (parsed.name) {
+      case "model": {
+        // item59: open the reusable picker fed by the model client's frozen
+        // state — one section per service, models recency-sorted, the
+        // current model marked. Render-only: the selection comes back as an
+        // `agt-picker-select` event (handled above) and the swap itself
+        // goes through modelClient.select (the client owns POST /api/model).
+        const composer = /** @type {import("./agt-composer.js").AgtComposer} */ (
+          this.querySelector("agt-composer")
+        );
+        const sections = this.#modelPickerSections();
+        if (!composer || sections.length === 0) {
+          console.error("[slash] error: no services rostered for /model");
+          return;
+        }
+        composer.openPicker(sections, "models");
+        console.log("[slash] model: opened the model picker");
+        return;
+      }
       case "built-ins": {
         if (!this.#snapshot) await this.#fetchState();
         console.log("[slash] built-ins: opened the Built-ins tree");
