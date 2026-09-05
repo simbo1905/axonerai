@@ -1,5 +1,5 @@
 JTD_CODEGEN ?= mise exec -- jtd-codegen
-TSC         ?= tsc
+TSC         ?= bunx tsc
 SCHEMA_DIR  := schemas
 # WEB-LOCAL UI-event schemas (NOT server wire events): generated into the
 # same web/generated/ barrel but kept out of schemas/*.jdt.json so the
@@ -11,7 +11,7 @@ WEB_SCHEMAS := $(wildcard $(WEB_SCHEMA_DIR)/*.jdt.json)
 VALIDATORS  := $(patsubst $(SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(SCHEMAS)) \
                $(patsubst $(WEB_SCHEMA_DIR)/%.jdt.json,$(OUT_DIR)/%.mjs,$(WEB_SCHEMAS))
 
-.PHONY: validators clean-validators check-types prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat wasm-validators oneshot
+.PHONY: validators clean-validators check-types web-tests prompts init check build-server serve-up serve-down serve-status serve-logs evals wasm-pretty wasm-lineformat wasm-validators oneshot
 
 # Run the CLI agent ONCE and exit (item45): make oneshot PROMPT="<prompt or
 # path/to/skill.md>". A PROMPT ending in .md that exists on disk is read as a
@@ -25,10 +25,16 @@ oneshot:
 # Must run before `cargo build`: src/prompt.rs embeds
 # prompts/generated/default.txt at compile time via include_str!.
 prompts:
-	node prompts/build.mjs
+	bun prompts/build.mjs
 
 check-types:
 	$(TSC) --noEmit
+
+# Web unit suites: node:test-format .mjs sources run natively under bun.
+# (No node --test target ever existed; this target makes the bun runner the
+# canonical invocation.) Headless browser suites keep their chrome invocation.
+web-tests:
+	bun test web/src/*.test.mjs
 
 validators: $(VALIDATORS) $(OUT_DIR)/validators.mjs
 
@@ -146,4 +152,4 @@ evals: build-server prompts
 	@tooling/serve.lua up opencode-go glm-5.2 9507
 	@promptfoo eval -c evals/promptfooconfig.yaml --no-share -j 1 --output .tmp/evals/results.json || true
 	@tooling/serve.lua down all
-	@node evals/summarize.mjs .tmp/evals/results.json
+	@bun evals/summarize.mjs .tmp/evals/results.json

@@ -62,7 +62,8 @@ Working rules for agents operating in this repository.
   `web/assets/console-spool-worker.js`, `web/src/console-model.mjs`.
 - Do not write tests that cross a decoupling boundary. BroadcastChannel,
   worker, and IndexedDB boundaries exist so that each side can be tested
-  alone. Test pure logic in node:test; test the DOM in a single page. Never
+  alone. Test pure logic with `bun test` over node:test-format .mjs sources;
+  test the DOM in a single page. Never
   orchestrate two pages to simulate a race the event loop cannot produce.
   Producers persist first and broadcast second; consumers subscribe first and
   read second. When a worker persists on a producer's behalf, the worker

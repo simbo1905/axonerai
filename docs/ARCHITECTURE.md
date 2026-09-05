@@ -93,7 +93,8 @@ second.
 
 With first-class logging (`console.log`/`console.error` teed to the debug
 console via `web/src/console-bus.mjs`) and boundary validation, headless
-`node:test` suites cover all logic. A browser is only needed when something
+`bun test` suites (node:test-format sources) cover all logic. A browser is only
+needed when something
 actually renders. Corrupt/missing-data unit tests are unnecessary: the type
 system plus boundary validation already handle those classes of defect.
 

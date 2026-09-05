@@ -210,9 +210,10 @@ transactions against the chat store.
 The architecture and the test policy are two views of the same decision —
 see ARCHITECTURE.md Decisions 2–3 and AGENTS.md for the verbatim rule.
 
-- **Test pure logic in `node:test`.** Wire validation/freeze/drop, dispatch,
+- **Test pure logic with `bun test` (node:test-format sources).** Wire
+  validation/freeze/drop, dispatch,
   store, history helpers, models roster, format helpers — all run as plain ES
-  modules in node. A browser is only required when something renders.
+  modules in bun. A browser is only required when something renders.
 - **Per-page single-page suites.** Each screen has an injection-style headless
   suite (`web/test/<page>.headless.mjs` + runner): stub the transport, inject
   frozen records, assert the render. No cross-page orchestration.

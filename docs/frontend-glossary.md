@@ -24,10 +24,11 @@ safety without a transpiled language.
 **bun-runner-preference** — The owner's stated preference for Bun/bunx as the
 JS runner (gists and session text: "unit test with bunx"; node is described as
 "cancer ... everything is loaded into memory"). Current repo reality: test
-suites run under `node:test`; the preference governs tool choice elsewhere.
+suites are node:test-format `.mjs` run under `bun test`; the preference
+governs tool choice elsewhere.
 
 **red-green-tdd** — Write the failing test first, then the code. Applied to
-Rust (line-format, pretty-printer), JS (node suites) and WASM parity tests.
+Rust (line-format, pretty-printer), JS (bun suites) and WASM parity tests.
 
 **delegation-process** — How the project is built: one agent per itemNN spec
 in `.tmp/itemNN.md` (scratch, never committed); agents implement, verify, and
@@ -266,7 +267,7 @@ pages are decomputed via the event-bus pattern, so there is no cross-page
 test surface to build.
 
 **pure-js-tests-over-browser** — With boundary validation and teed logging,
-headless `node:test` covers all logic; a browser is only needed when
+headless `bun test` covers all logic; a browser is only needed when
 something actually renders. Corrupt/missing-data unit tests are unnecessary:
 the type system plus boundary validation already cover that class.
 

@@ -325,6 +325,17 @@ Current: a read-only lint skill grades each file A/B/C against rules a–e;
 total conformance is not the objective. Evidence: docs/ARCHITECTURE.md Part 3;
 .axonerai/skills/lint.
 
+**D46 — bun is the JS runner (2026-09-05).**
+Current: bun (and bunx) replaces node (and npx) for every JS invocation the
+repo controls: `make web-tests` runs `bun test`, `make prompts` and the eval
+summariser run `bun`, type-checking runs `bunx tsc`. Test SOURCES stay
+node:test-format `.mjs` (runs natively under `bun test`); headless browser
+suites keep their chrome invocation (they are browser tests, not a node
+runner). Supersedes D04's "repo has not adopted" state (D04's dated wording
+is a verbatim record and stays as written). The user's global bun/bunx
+preference lives in their published skills, NOT in AGENTS.md (explicit
+user instruction). Evidence: Makefile; AGENTS.md:65; item58/59/60 reports.
+
 ---
 
 ## Appendix — spec-listed, not corpus-verified
